@@ -8,5 +8,26 @@
     "prompt_tokens": 2079,
     "reference_tokens": 256,
     "exact_token_id_match": true
+  },
+  "clean_rebuild": {
+    "validated_at": "2026-07-25",
+    "device": "Vivo V2505A",
+    "soc": "SM8850",
+    "android": "16",
+    "qairt_version": "2.48.40.260702",
+    "dsp_arch": "v81",
+    "context_count": 39,
+    "context_bytes": 2141081600,
+    "all_context_sizes_match": true,
+    "byte_identical_contexts": 2,
+    "focused_top1": "25/25",
+    "realistic_top1": "47/48",
+    "realistic_logits_sha256": "8719be74547b22c22b014bd85a9c5b22d3374c33ad0a79daeb259b2432aecdc2",
+    "realistic_logits_match_retained_release": true,
+    "peak_rss_kib": 1056148,
+    "process_crash": false,
+    "dsp_ssr": false,
+    "non_finite_logits": false,
+    "known_runtime_warning_issue": 8
   }
 }

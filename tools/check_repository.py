@@ -134,6 +134,15 @@ def validate_release_metadata() -> None:
         raise ValueError("release tokenizer parity is not exact")
     if tokenizer["model_revision"] != provenance["model"]["revision"]:
         raise ValueError("tokenizer validation used a different model revision")
+    rebuild = validation["clean_rebuild"]
+    if rebuild["context_count"] != count:
+        raise ValueError("clean rebuild context count differs from the manifest")
+    if not rebuild["all_context_sizes_match"]:
+        raise ValueError("clean rebuild context sizes were not validated")
+    if not rebuild["realistic_logits_match_retained_release"]:
+        raise ValueError("clean rebuild device logits differ from the retained release")
+    if rebuild["process_crash"] or rebuild["dsp_ssr"] or rebuild["non_finite_logits"]:
+        raise ValueError("clean rebuild device gate contains a fatal runtime failure")
 
     source = json.loads((release / "source-manifest.json").read_text(encoding="utf-8"))
     if source.get("format") != "meetnote.model_source_manifest.v1":
