@@ -1,0 +1,1 @@
+{"/layers.0/self_attn/q_proj/Linear": {"bits": 8, "block_size": 64, "symmetric": true}}

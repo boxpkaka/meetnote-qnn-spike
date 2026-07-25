@@ -1,0 +1,42 @@
+{
+  "format": "meetnote.qnn_release_provenance.v1",
+  "model": {
+    "id": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+  },
+  "mnn": {
+    "revision": "0bff03cbef43c783f44e41484b9f8a0b28bd758d"
+  },
+  "qairt": {
+    "version": "2.48.40.260702",
+    "soc_id": 87,
+    "dsp_arch": "v81"
+  },
+  "quantization": {
+    "weight_bits": 4,
+    "weight_block": 64,
+    "lm_head_bits": 4,
+    "lm_head_block": 64,
+    "activation_bits": 16,
+    "hqq": true,
+    "omniquant": true
+  },
+  "graph": {
+    "chunk_size": 64,
+    "max_history_token": 0,
+    "cpu_ops": [
+      "rope_phase_multiply",
+      "rope_sin",
+      "rope_cos"
+    ]
+  },
+  "assembly": {
+    "format": "meetnote.qnn_cpu_rope_assembly.v1",
+    "context_count": 39,
+    "wrapper_sha256": "71052b83ecb988c9db2a62d3b310b7bf83c1aae32974cf2d4c8526231ccf185f"
+  },
+  "validated_device": {
+    "model": "Vivo V2505A",
+    "soc": "SM8850"
+  }
+}

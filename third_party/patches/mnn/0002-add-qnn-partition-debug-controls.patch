@@ -1,0 +1,200 @@
+diff --git a/tools/cpp/compilefornpu.cpp b/tools/cpp/compilefornpu.cpp
+index 17fdf10c..f8b51623 100644
+--- a/tools/cpp/compilefornpu.cpp
++++ b/tools/cpp/compilefornpu.cpp
+@@ -29,6 +29,8 @@ static std::string gOfflieDst;
+ static std::string gGraphName = "graph";
+ static std::string gCacheDir = "res";
+ static MNNForwardType gNPUType = MNN_FORWARD_NN;
++static std::set<std::string> gForceCpuOps;
++static std::vector<std::string> gDebugOutputNames;
+ static bool initConstTensorsNoAlloc(std::vector<std::shared_ptr<Tensor>>& tensors, const Net* net) {
+     bool valid    = true;
+     tensors.resize(net->tensorName()->size());
+@@ -101,6 +103,9 @@ static bool _npuSupportOp(const Op* op) {
+ }
+
+ static bool isBreakOp(const Op* op) {
++    if (op->name() != nullptr && gForceCpuOps.count(op->name()->str()) > 0) {
++        return true;
++    }
+     bool isWhileControlflow = false;
+     if (op->type() == OpType_While && op->main_as_WhileParam() != nullptr) {
+         isWhileControlflow = true;
+@@ -659,8 +664,12 @@ static std::vector<SubModuleInfo> _createSubModuleInfo(const Net* net, const std
+             controlOp.opList = {i};
+             controlOp.isBreak = true;
+             if (nullptr != op->inputIndexes()) {
+-                controlOp.inputs.resize(op->inputIndexes()->size());
+-                ::memcpy(controlOp.inputs.data(), op->inputIndexes()->data(), controlOp.inputs.size() * sizeof(int));
++                for (int input = 0; input < op->inputIndexes()->size(); ++input) {
++                    auto index = op->inputIndexes()->data()[input];
++                    if (noComputeIndexes.find(index) == noComputeIndexes.end()) {
++                        controlOp.inputs.emplace_back(index);
++                    }
++                }
+             }
+             if (nullptr != op->outputIndexes()) {
+                 controlOp.outputs.resize(op->outputIndexes()->size());
+@@ -760,6 +769,66 @@ static std::vector<SubModuleInfo> _createSubModuleInfo(const Net* net, const std
+     }
+     return submodule;
+ }
++
++static bool _appendDebugOutputs(const Net* net, std::vector<SubModuleInfo>& submodules) {
++    for (const auto& tensorName : gDebugOutputNames) {
++        int tensorIndex = -1;
++        for (int index = 0; index < net->tensorName()->size(); ++index) {
++            if (net->tensorName()->GetAsString(index)->str() == tensorName) {
++                tensorIndex = index;
++                break;
++            }
++        }
++        if (tensorIndex < 0) {
++            MNN_ERROR("compilefornpu: debug output tensor not found: %s\n", tensorName.c_str());
++            return false;
++        }
++
++        bool appended = false;
++        for (auto& module : submodules) {
++            if (module.isBreak) {
++                continue;
++            }
++            bool producedByModule = false;
++            for (auto opIndex : module.opList) {
++                auto op = net->oplists()->GetAs<Op>(opIndex);
++                if (op->outputIndexes() == nullptr) {
++                    continue;
++                }
++                for (int output = 0; output < op->outputIndexes()->size(); ++output) {
++                    if (op->outputIndexes()->data()[output] == tensorIndex) {
++                        producedByModule = true;
++                        break;
++                    }
++                }
++                if (producedByModule) {
++                    break;
++                }
++            }
++            if (!producedByModule) {
++                continue;
++            }
++            if (std::find(module.outputs.begin(), module.outputs.end(), tensorIndex) ==
++                module.outputs.end()) {
++                // Append after normal outputs so existing plugin output positions stay stable.
++                module.outputs.emplace_back(tensorIndex);
++            }
++            MNN_PRINT(
++                "compilefornpu: expose debug output %s as t%d\n",
++                tensorName.c_str(),
++                tensorIndex);
++            appended = true;
++            break;
++        }
++        if (!appended) {
++            MNN_ERROR(
++                "compilefornpu: debug output is not produced by an NPU submodule: %s\n",
++                tensorName.c_str());
++            return false;
++        }
++    }
++    return true;
++}
+ static std::set<std::string> _getAttentionName(const void* buffer, size_t bufferSize) {
+     std::set<std::string> attentionNames;
+     auto net = flatbuffers::GetRoot<Net>(buffer);
+@@ -824,10 +893,61 @@ static SubModuleIO _getSubModuleIO(std::vector<MNN::Express::VARP> inputs, const
+     MNN::Express::ExecutorScope::Current()->setCallBack(std::move(beforeCallBack), std::move(callBack));
+     auto outputs = m->onForward(inputs);
+     io.inputs = inputs;
+-    io.outputs.resize(outputs.size());
++    if (outputs.size() != outputNames.size()) {
++        MNN_PRINT("compilefornpu: onForward returned %zu outputs for %zu requested outputs; using placeholder outputs for conversion metadata.\n",
++                  outputs.size(), outputNames.size());
++    }
++    io.outputs.resize(outputNames.size());
+     for (int i=0; i<outputs.size(); ++i) {
+         io.outputs[i] = MNN::Express::_Clone(outputs[i], true);
+     }
++    std::vector<int> attentionOutputDims;
++    const MNN::Express::Variable::Info* attentionQueryInfo = nullptr;
++    if (info.isBreak && info.opList.size() == 1) {
++        auto op = net->oplists()->GetAs<Op>(info.opList[0]);
++        if (op->type() == OpType_Attention && op->inputIndexes() != nullptr &&
++            op->inputIndexes()->size() > 0) {
++            auto queryTensorIndex = op->inputIndexes()->data()[0];
++            auto queryInput = std::find(info.inputs.begin(), info.inputs.end(), queryTensorIndex);
++            if (queryInput != info.inputs.end()) {
++                auto queryPosition = std::distance(info.inputs.begin(), queryInput);
++                attentionQueryInfo = inputs[queryPosition]->getInfo();
++            }
++            if (attentionQueryInfo != nullptr && attentionQueryInfo->dim.size() >= 4) {
++                attentionOutputDims = attentionQueryInfo->dim;
++                attentionOutputDims[attentionOutputDims.size() - 2] *= attentionOutputDims.back();
++                attentionOutputDims.pop_back();
++            }
++        }
++    }
++    const MNN::Express::Variable::Info* placeholderInfo = nullptr;
++    for (auto& input : inputs) {
++        auto info = input->getInfo();
++        if (info != nullptr && !info->dim.empty() && info->dim.back() >= 256 && info->dim.size() <= 3) {
++            placeholderInfo = info;
++            break;
++        }
++    }
++    if (placeholderInfo == nullptr && !inputs.empty()) {
++        placeholderInfo = inputs[0]->getInfo();
++    }
++    for (int i=outputs.size(); i<outputNames.size(); ++i) {
++        auto dims = !attentionOutputDims.empty()
++            ? attentionOutputDims
++            : (placeholderInfo == nullptr ? std::vector<int>{1} : placeholderInfo->dim);
++        if (dims.empty()) {
++            dims = {1};
++        }
++        for (auto& dim : dims) {
++            if (dim <= 0) {
++                dim = 1;
++            }
++        }
++        auto metadataInfo = attentionQueryInfo == nullptr ? placeholderInfo : attentionQueryInfo;
++        auto order = metadataInfo == nullptr ? MNN::Express::NCHW : metadataInfo->order;
++        auto type = metadataInfo == nullptr ? halide_type_of<float>() : metadataInfo->type;
++        io.outputs[i] = MNN::Express::_Input(dims, order, type);
++    }
+     return io;
+ }
+
+@@ -1506,9 +1626,21 @@ int main(int argc, const char* argv[]) {
+                 skipOps.insert(iter->GetString());
+             }
+         }
++        if (document.HasMember("cpu_ops")) {
++            auto cpuOps = document["cpu_ops"].GetArray();
++            for (auto iter = cpuOps.Begin(); iter != cpuOps.End(); iter++) {
++                gForceCpuOps.insert(iter->GetString());
++            }
++        }
+         if (document.HasMember("KVCACHE_SIZE_LIMIT")) {
+             gMaxKVSize = document["KVCACHE_SIZE_LIMIT"].GetInt();
+         }
++        if (document.HasMember("debug_outputs")) {
++            auto debugOutputs = document["debug_outputs"].GetArray();
++            for (auto iter = debugOutputs.Begin(); iter != debugOutputs.End(); iter++) {
++                gDebugOutputNames.emplace_back(iter->GetString());
++            }
++        }
+         if (document.HasMember("testdir")) {
+             auto testdir = document["testdir"].GetArray();
+             for (auto iter = testdir.Begin(); iter != testdir.End(); iter++) {
+@@ -1695,6 +1827,9 @@ int main(int argc, const char* argv[]) {
+
+     // Split Module
+     auto subModulesInfo = _createSubModuleInfo(net0, inputIndexes, outputIndexes, noneedComputeIndexes, sharedConst);
++    if (!_appendDebugOutputs(net0, subModulesInfo)) {
++        return 1;
++    }
+     // TODO: Insert pass to split submodule to npu and not npu
+     std::map<std::string, std::vector<std::string>> merges;
+     std::vector<std::shared_ptr<NetT>> allNets;

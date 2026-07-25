@@ -1,0 +1,500 @@
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <memory>
+#include <numeric>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "llm/llm.hpp"
+
+using MNN::Transformer::Llm;
+using MNN::Transformer::LlmContext;
+using MNN::Transformer::LlmStatus;
+
+namespace {
+
+std::string readFile(const std::string& path) {
+    std::ifstream input(path);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+std::string qwenChatPrompt(const std::string& userPrompt) {
+    std::ostringstream out;
+    out << "<|im_start|>system\n"
+        << "你是 MeetNote 的端侧会议纪要结构化抽取引擎。不要输出思考过程，不要输出 Markdown，只输出用户要求的 JSON。"
+        << "<|im_end|>\n"
+        << "<|im_start|>user\n"
+        << userPrompt
+        << "<|im_end|>\n"
+        << "<|im_start|>assistant\n"
+        << "<think>\n\n</think>\n\n";
+    return out.str();
+}
+
+std::string escapeJson(const std::string& value) {
+    std::ostringstream out;
+    for (unsigned char ch : value) {
+        switch (ch) {
+            case '\\': out << "\\\\"; break;
+            case '"': out << "\\\""; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:
+                if (ch < 0x20) {
+                    out << "\\u"
+                        << std::hex << std::setw(4) << std::setfill('0')
+                        << static_cast<int>(ch)
+                        << std::dec << std::setw(0);
+                } else {
+                    out << static_cast<char>(ch);
+                }
+        }
+    }
+    return out.str();
+}
+
+void appendJsonFloat(std::ostream& out, float value) {
+    if (std::isfinite(value)) {
+        out << std::setprecision(9) << value;
+    } else {
+        out << "null";
+    }
+}
+
+int64_t nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool endsWith(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+int parseLayer(const std::string& name) {
+    const std::vector<std::string> prefixes = {"/blocks.", "/layers."};
+    size_t start = std::string::npos;
+    std::string prefix;
+    for (const auto& candidate : prefixes) {
+        start = name.find(candidate);
+        if (start != std::string::npos) {
+            prefix = candidate;
+            break;
+        }
+    }
+    if (prefix.empty()) {
+        return -1;
+    }
+    const size_t numberStart = start + prefix.size();
+    const size_t end = name.find("/", numberStart);
+    if (end == std::string::npos || end == numberStart) {
+        return -1;
+    }
+    const std::string number = name.substr(numberStart, end - numberStart);
+    if (!std::all_of(number.begin(), number.end(), [](unsigned char ch) {
+            return std::isdigit(ch);
+        })) {
+        return -1;
+    }
+    return std::stoi(number);
+}
+
+class BoundaryTraceWriter {
+public:
+    explicit BoundaryTraceWriter(const std::string& prefix)
+        : metadata_(prefix + ".layers.jsonl", std::ios::out | std::ios::trunc),
+          tensors_(prefix + ".layers.f32", std::ios::out | std::ios::binary | std::ios::trunc) {
+    }
+
+    bool isOpen() const {
+        return metadata_.is_open() && tensors_.is_open();
+    }
+
+    bool capture(const std::vector<MNN::Tensor*>& outputs, const MNN::OperatorInfo* info) {
+        if (outputs.empty() || info == nullptr) {
+            return true;
+        }
+        const std::string& name = info->name();
+        const int layer = parseLayer(name);
+        if (layer >= 0) {
+            currentLayer_ = layer;
+        }
+        const int effectiveLayer = layer >= 0 ? layer : currentLayer_;
+        if (effectiveLayer < 0 || effectiveLayer > 35) {
+            return true;
+        }
+        const std::string block = "/blocks." + std::to_string(effectiveLayer);
+        if (name == block + "/Reshape_output_0") {
+            return write("hidden", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/input_layernorm/Mul_1_output_0")) {
+            return write("q_proj_input", effectiveLayer, name, outputs[0]);
+        }
+        if (name == "/Add_output_0") {
+            return write("attn_q", effectiveLayer, name, outputs[0]);
+        }
+        if (name == "/Add_1_output_0") {
+            return write("attn_k", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/v_proj/Linear")) {
+            return write("attn_v", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/Add_output_0")) {
+            return write("attn_q", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/Add_1_output_0")) {
+            return write("attn_k", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/Reshape_2_output_0")) {
+            return write("attn_v", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/q_proj/FakeLinear_output_0") ||
+            endsWith(name, "/self_attn/q_proj/Linear/post_reshape") ||
+            endsWith(name, "/self_attn/q_proj/Linear")) {
+            return write("q_proj", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/q_norm/Mul_1_output_0") ||
+            name == "/q_norm/Mul_1_output_0") {
+            return write("q_norm", effectiveLayer, name, outputs[0]);
+        }
+        return true;
+    }
+
+    bool captureInputs(
+            const std::vector<MNN::Tensor*>& inputs,
+            const MNN::OperatorInfo* info) {
+        if (inputs.empty() || info == nullptr) {
+            return true;
+        }
+        if (endsWith(info->name(), "/self_attn/q_proj/Linear")) {
+            const int layer = parseLayer(info->name());
+            if (layer >= 0 && layer <= 35) {
+                currentLayer_ = layer;
+                return write("q_proj_input", layer, info->name(), inputs[0]);
+            }
+        }
+        if (endsWith(info->name(), "/input_layernorm/Mul_1_output_0")) {
+            const int parsedLayer = parseLayer(info->name());
+            currentLayer_ = parsedLayer >= 0 ? parsedLayer : currentLayer_ + 1;
+            if (currentLayer_ > 35) {
+                return false;
+            }
+            return write("hidden", currentLayer_, info->name(), inputs[0]);
+        }
+        if (endsWith(info->name(), "/self_attn/q_norm/Mul_1_output_0")) {
+            return write("q_proj", 0, info->name(), inputs[0]);
+        }
+        return true;
+    }
+
+    bool good() const {
+        return records_ >= 3 && metadata_.good() && tensors_.good();
+    }
+
+private:
+    bool write(
+            const char* kind,
+            int layer,
+            const std::string& opName,
+            MNN::Tensor* deviceTensor) {
+        const std::string key = std::to_string(layer) + ":" + kind;
+        if (!captured_.insert(key).second) {
+            return true;
+        }
+        if (deviceTensor == nullptr || deviceTensor->elementSize() <= 0) {
+            return false;
+        }
+        std::shared_ptr<MNN::Tensor> hostTensor(
+                new MNN::Tensor(deviceTensor, deviceTensor->getDimensionType()));
+        if (!deviceTensor->copyToHostTensor(hostTensor.get())) {
+            return false;
+        }
+        const auto type = hostTensor->getType();
+        const float* values = hostTensor->host<float>();
+        if (type.code != halide_type_float || type.bits != 32 || values == nullptr) {
+            return false;
+        }
+
+        const int elements = hostTensor->elementSize();
+        metadata_ << "{\"kind\":\"" << kind
+                  << "\",\"layer\":" << layer
+                  << ",\"op\":\"" << escapeJson(opName)
+                  << "\",\"offset_floats\":" << offsetFloats_
+                  << ",\"elements\":" << elements
+                  << ",\"shape\":[";
+        for (int dimension = 0; dimension < hostTensor->dimensions(); ++dimension) {
+            if (dimension > 0) {
+                metadata_ << ",";
+            }
+            metadata_ << hostTensor->length(dimension);
+        }
+        metadata_ << "]}\n";
+        tensors_.write(
+                reinterpret_cast<const char*>(values),
+                static_cast<std::streamsize>(elements) * sizeof(float));
+        offsetFloats_ += elements;
+        ++records_;
+        return metadata_.good() && tensors_.good();
+    }
+
+    std::ofstream metadata_;
+    std::ofstream tensors_;
+    int64_t offsetFloats_ = 0;
+    int records_ = 0;
+    int currentLayer_ = -1;
+    std::set<std::string> captured_;
+};
+
+void writeStep(
+        std::ostream& output,
+        Llm* llm,
+        int step,
+        int inputToken,
+        int targetToken,
+        const float* logits,
+        int vocabSize,
+        int topK,
+        int64_t forwardMs) {
+    std::vector<int> indices(static_cast<size_t>(vocabSize));
+    std::iota(indices.begin(), indices.end(), 0);
+    const int selected = std::min(topK, vocabSize);
+    std::partial_sort(
+            indices.begin(),
+            indices.begin() + selected,
+            indices.end(),
+            [logits](int lhs, int rhs) {
+                return logits[lhs] > logits[rhs];
+            });
+
+    const float targetLogit = logits[targetToken];
+    int targetRank = 1;
+    int finiteCount = 0;
+    for (int token = 0; token < vocabSize; ++token) {
+        if (std::isfinite(logits[token])) {
+            ++finiteCount;
+        }
+        if (logits[token] > targetLogit) {
+            ++targetRank;
+        }
+    }
+
+    output << "{\"type\":\"step\""
+           << ",\"step\":" << step
+           << ",\"input_token\":" << inputToken
+           << ",\"input_piece\":\"" << escapeJson(llm->tokenizer_decode(inputToken)) << "\""
+           << ",\"target_token\":" << targetToken
+           << ",\"target_piece\":\"" << escapeJson(llm->tokenizer_decode(targetToken)) << "\""
+           << ",\"target_logit\":";
+    appendJsonFloat(output, targetLogit);
+    output << ",\"target_rank\":" << targetRank
+           << ",\"finite_logits\":" << finiteCount
+           << ",\"forward_ms\":" << forwardMs
+           << ",\"top\":[";
+    for (int rank = 0; rank < selected; ++rank) {
+        if (rank > 0) {
+            output << ",";
+        }
+        const int token = indices[rank];
+        output << "{\"token\":" << token
+               << ",\"piece\":\"" << escapeJson(llm->tokenizer_decode(token)) << "\""
+               << ",\"logit\":";
+        appendJsonFloat(output, logits[token]);
+        output << "}";
+    }
+    output << "]}\n";
+}
+
+int parsePositiveInt(const char* value, const char* label) {
+    std::istringstream input(value);
+    int parsed = 0;
+    input >> parsed;
+    if (!input || parsed <= 0) {
+        std::cerr << label << " must be a positive integer\n";
+        return -1;
+    }
+    return parsed;
+}
+
+}  // namespace
+
+int main(int argc, const char* argv[]) {
+    if (argc < 5 || argc > 9) {
+        std::cerr
+                << "Usage: " << argv[0]
+                << " <config.json> <prompt.txt> <reference.txt> <output-prefix>"
+                << " [max-steps=48] [top-k=20] [threads=4] [trace-step=-1]\n";
+        return 2;
+    }
+
+    const int maxSteps = argc >= 6 ? parsePositiveInt(argv[5], "max-steps") : 48;
+    const int topK = argc >= 7 ? parsePositiveInt(argv[6], "top-k") : 20;
+    const int threads = argc >= 8 ? parsePositiveInt(argv[7], "threads") : 4;
+    const int traceStep = argc >= 9 ? std::stoi(argv[8]) : -1;
+    if (maxSteps < 0 || topK < 0 || threads < 0) {
+        return 2;
+    }
+    if (traceStep >= maxSteps || traceStep < -1) {
+        std::cerr << "trace-step must be -1 or less than max-steps\n";
+        return 2;
+    }
+
+    const std::string prompt = readFile(argv[2]);
+    const std::string reference = readFile(argv[3]);
+    if (prompt.empty() || reference.empty()) {
+        std::cerr << "prompt and reference files must be non-empty\n";
+        return 2;
+    }
+
+    std::unique_ptr<Llm> llm(Llm::createLLM(argv[1]));
+    if (!llm) {
+        std::cerr << "failed to create MNN LLM\n";
+        return 1;
+    }
+    const std::string prefix = argv[4];
+    std::unique_ptr<BoundaryTraceWriter> boundaryTrace;
+    bool traceActive = false;
+    std::ostringstream config;
+    config << "{\"async\":false,\"enable_debug\":"
+           << (traceStep >= 0 ? "true" : "false")
+           << ",\"backend_type\":\"cpu\",\"thread_num\":" << threads
+           << ",\"jinja\":{\"context\":{\"enable_thinking\":false}}}";
+    llm->set_config(config.str());
+    llm->set_config("{\"tmp_path\":\"/tmp/meetnote-mnn-teacher\"}");
+    if (traceStep >= 0) {
+        boundaryTrace.reset(new BoundaryTraceWriter(prefix));
+        if (!boundaryTrace->isOpen()) {
+            std::cerr << "failed to open boundary trace files\n";
+            return 1;
+        }
+        llm->setDebugCallback(
+                [&boundaryTrace, &traceActive](
+                        const std::vector<MNN::Tensor*>& tensors,
+                        const MNN::OperatorInfo* info) {
+                    return !traceActive || boundaryTrace->captureInputs(tensors, info);
+                },
+                [&boundaryTrace, &traceActive](
+                        const std::vector<MNN::Tensor*>& tensors,
+                        const MNN::OperatorInfo* info) {
+                    return !traceActive || boundaryTrace->capture(tensors, info);
+                });
+    }
+    if (!llm->load()) {
+        std::cerr << "failed to load MNN LLM\n";
+        return 1;
+    }
+
+    std::ofstream metadata(prefix + ".jsonl", std::ios::out | std::ios::trunc);
+    std::ofstream binary(prefix + ".f32", std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!metadata.is_open() || !binary.is_open()) {
+        std::cerr << "failed to open output files\n";
+        return 1;
+    }
+
+    llm->reset();
+    llm->generate_init();
+    const std::vector<int> inputIds = llm->tokenizer_encode(qwenChatPrompt(prompt));
+    const std::vector<int> referenceIds = llm->tokenizer_encode(reference);
+    if (referenceIds.size() < 2) {
+        std::cerr << "reference must encode to at least two tokens\n";
+        return 2;
+    }
+
+    llm->generate(inputIds, 0);
+    LlmContext* context = const_cast<LlmContext*>(llm->getContext());
+    if (context->status == LlmStatus::INTERNAL_ERROR) {
+        std::cerr << "prefill failed\n";
+        return 1;
+    }
+
+    const int steps = std::min(static_cast<int>(referenceIds.size()) - 1, maxSteps);
+    int vocabSize = 0;
+    for (int step = 0; step < steps; ++step) {
+        const int inputToken = referenceIds[step];
+        const int targetToken = referenceIds[step + 1];
+        context->history_tokens.push_back(inputToken);
+        context->gen_seq_len += 1;
+        if (step == traceStep) {
+            traceActive = true;
+        }
+        const int64_t startMs = nowMs();
+        auto logits = llm->forward({inputToken}, false);
+        const int64_t forwardMs = nowMs() - startMs;
+        if (step == traceStep) {
+            traceActive = false;
+        }
+        context->gen_seq_len -= 1;
+        if (logits == nullptr || logits->getInfo() == nullptr) {
+            std::cerr << "decode returned no logits at step " << step << "\n";
+            return 1;
+        }
+
+        const auto* info = logits->getInfo();
+        if (info->dim.empty()) {
+            std::cerr << "decode logits have no dimensions\n";
+            return 1;
+        }
+        vocabSize = info->dim.back();
+        if (vocabSize <= 0 || targetToken < 0 || targetToken >= vocabSize) {
+            std::cerr << "invalid vocabulary or target token at step " << step << "\n";
+            return 1;
+        }
+        const float* values = logits->readMap<float>();
+        if (values == nullptr || info->size < vocabSize) {
+            std::cerr << "decode logits are not readable at step " << step << "\n";
+            return 1;
+        }
+        values += info->size - vocabSize;
+
+        if (step == 0) {
+            metadata << "{\"type\":\"header\""
+                     << ",\"format\":\"meetnote.teacher_logits.v1\""
+                     << ",\"dtype\":\"float32_le\""
+                     << ",\"prompt_tokens\":" << inputIds.size()
+                     << ",\"reference_tokens\":" << referenceIds.size()
+                     << ",\"steps\":" << steps
+                     << ",\"vocab_size\":" << vocabSize
+                     << ",\"top_k\":" << topK
+                     << "}\n";
+        }
+        binary.write(
+                reinterpret_cast<const char*>(values),
+                static_cast<std::streamsize>(vocabSize) * sizeof(float));
+        writeStep(
+                metadata,
+                llm.get(),
+                step,
+                inputToken,
+                targetToken,
+                values,
+                vocabSize,
+                topK,
+                forwardMs);
+        if (!metadata.good() || !binary.good()) {
+            std::cerr << "failed while writing step " << step << "\n";
+            return 1;
+        }
+        std::cerr << "step " << (step + 1) << "/" << steps
+                  << " forward_ms=" << forwardMs << "\n";
+    }
+
+    metadata << "{\"type\":\"footer\",\"steps_written\":" << steps << "}\n";
+    if (boundaryTrace != nullptr && !boundaryTrace->good()) {
+        std::cerr << "boundary trace did not capture all expected tensors\n";
+        return 1;
+    }
+    std::cout << "prompt_tokens=" << inputIds.size()
+              << " reference_tokens=" << referenceIds.size()
+              << " steps=" << steps
+              << " vocab_size=" << vocabSize << "\n";
+    return 0;
+}

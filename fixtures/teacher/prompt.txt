@@ -1,0 +1,61 @@
+        你是 MeetNote 会议纪要编辑。只依据会议标题、参会人、transcript 和 signal_index 整理纪要，不得补充输入中没有的人名、日期、角色、措施或结论。
+
+        规则：
+        - 区分讨论、明确决议、已分配行动和待确认问题。单方反馈写“有反馈称……，情况待核实”，不能写成已确认事实。
+        - decisions 只收录明确确认、决定或同意的事项；action_items 只收录明确分配的任务。没有证据时输出 []。
+        - risks 保留原文风险词；impact、mitigation、owner、due 没有证据时写“待确认”，不得自行提出处理方案。
+        - 每个 topics、decisions、action_items、risks、open_questions 项都引用最直接的 evidence_ids，每项最多 4 个，且只能使用输入里的 utterance id。
+        - follow_up_message 只复述已确定动作或待确认风险，不新增建议。
+
+        只输出一个合法 JSON 对象，不要 Markdown、解释或思考过程。输出语言：zh-CN。
+        顶层第一个字段必须是 "schema_version": "meetnote.summary.v1"，meeting_title 必须原样复制会议标题。
+        不得照抄字段说明，不得输出空字符串。没有内容的数组直接输出 []。
+        字段合同（按此顺序输出）：
+        - schema_version：固定为 meetnote.summary.v1。
+        - meeting_title：输入会议标题原文。
+        - headline、overview：根据 transcript 写非空总结。
+        - topics：对象字段为 title、summary、evidence_ids。
+        - decisions：对象字段为 decision、owner、status、evidence_ids；status 只能从 confirmed、proposed、unclear 中选择一个单值。
+        - action_items：对象字段为 owner、task、due、priority、evidence_ids；priority 只能从 high、medium、low、unknown 中选择一个单值。
+        - risks：对象字段为 risk、impact、mitigation、evidence_ids；没有真实风险就输出 []。
+        - open_questions：对象字段为 question、owner、evidence_ids；没有真实待确认问题就输出 []。
+        - follow_up_message：非空字符串；没有行动或风险时简要复述会议结论。
+
+        会议标题：
+        离线会议助手三季度试点评审会
+
+        参会人和角色：
+        - S1: 陈晨 / 主持人/产品负责人 (identity=roster, role=roster)
+- S2: 李明 / 研发负责人 (identity=roster, role=roster)
+- S3: 王蕾 / 质量负责人 (identity=roster, role=roster)
+- S4: 赵强 / 数据治理负责人 (identity=roster, role=roster)
+- S5: 周敏 / 交付负责人 (identity=roster, role=roster)
+- S6: 孙浩 / 安全合规负责人 (identity=roster, role=roster)
+- S7: 刘倩 / 运营负责人 (identity=roster, role=roster)
+- S8: 高飞 / 财务负责人 (identity=roster, role=roster)
+- S9: 何宁 / 客户成功负责人 (identity=roster, role=roster)
+- S10: 钱程 / 基础设施负责人 (identity=roster, role=roster)
+- S11: 吴桐 / 采购负责人 (identity=roster, role=roster)
+- S12: 郑可 / 法务负责人 (identity=roster, role=roster)
+
+        <transcript>
+        [id=utt-0][time=00:00.000-00:24.000][speaker=S1 陈晨/主持人/产品负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.91] 今天评审离线会议助手三季度试点。目标不是追求功能数量，而是确认九月二十日前能否在三个客户现场稳定使用，并把遗留风险、负责人和验收口径一次说清。
+[id=utt-1][time=00:28.000-00:52.000][speaker=S5 周敏/交付负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.90] 当前三个试点里，华东制造已完成部署，华南园区等安全审批，北方医院要求所有会议数据不得离开内网。按现状，华东可按期，另外两个都存在准入风险。
+[id=utt-2][time=00:56.000-01:20.000][speaker=S2 李明/研发负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.89] 研发主链路已完成离线转写、说话人分离和结构化纪要联调。长会议的主要问题是多阶段纪要耗时，四十分钟文本目前需要多次模型调用，后台冻结后任务会停住。
+[id=utt-3][time=01:24.000-01:48.000][speaker=S3 王蕾/质量负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.88] 质量组复测二十场会议，转写完成率是百分之九十七。纪要 JSON 合法率不错，但三场长会议漏掉了末尾拍板事项，还有一场把提议写成了已确认决议。
+[id=utt-4][time=01:52.000-02:16.000][speaker=S1 陈晨/主持人/产品负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.87] 先明确验收红线：任何纪要失败都不能影响转写结果，不能导致应用或手机重启；没有证据的责任人、日期和决议必须降级为待确认。
+[id=utt-5][time=02:20.000-02:44.000][speaker=S6 孙浩/安全合规负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.86] 安全侧补充两条。第一，医院场景禁止上传音频和转写；第二，导出的 JSON 需要记录生成模型版本和处理时间，但不能包含设备序列号。
+[id=utt-6][time=02:48.000-03:12.000][speaker=S4 赵强/数据治理负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.85] 数据治理方案建议保留 utterance id、说话人和时间戳，纪要中的决议、待办、风险都必须回链 evidence_ids。原始音频默认三十天清理，客户要求可改为七天。
+[id=utt-7][time=03:16.000-03:40.000][speaker=S9 何宁/客户成功负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.91] 客户反馈最看重待办是否准确。华东项目明确要求把责任人和截止时间放在同一条里，如果截止时间会上没说，宁可写待确认，也不要根据项目计划推测。
+[id=utt-8][time=03:44.000-04:08.000][speaker=S8 高飞/财务负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.90] 预算方面，新增两台高内存测试机和一台散热测试箱共十二万元可以从质量专项列支，但外采云端摘要服务不在本季度预算内。
+[id=utt-9][time=04:12.000-04:36.000][speaker=S1 陈晨/主持人/产品负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.89] 这意味着本季度不引入云端摘要。请大家确认是否有异议。
+[id=utt-10][time=04:40.000-05:04.000][speaker=S12 郑可/法务负责人][speaker_source=system_inferred speaker_conf=0.88 asr_conf=0.88] 法务没有异议，但对客户演示时必须明确这是端侧最佳努力结果，不能宣传成百分之百准确，也不能默认把参会名单人数当成实际发言人数。
+[transcript_truncated] omitted_utterances=7 reason=maxTranscriptChars
+        </transcript>
+
+        <signal_index>
+        - utt-1: signals=安全
+- utt-4: signals=失败
+- utt-5: signals=安全
+- utt-16: signals=阻塞
+        </signal_index>

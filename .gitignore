@@ -1,0 +1,29 @@
+# This workspace already contains large experimental state. Keep the repository
+# allowlisted so SDKs, model weights, generated graphs, logs, and caches cannot
+# be added accidentally.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/docs/
+!/experiments/
+!/fixtures/
+!/releases/
+!/tools/
+!/third_party/
+
+/third_party/*
+!/third_party/patches/
+
+**/__pycache__/
+**/*.py[cod]
+**/*.o
+**/*.so
+**/*.a
+**/*.bin
+**/*.mnn
+**/*.weight
+**/*.f32
+**/*.log
+**/*.strace
+**/.DS_Store

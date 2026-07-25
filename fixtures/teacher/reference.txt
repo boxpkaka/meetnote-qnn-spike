@@ -1,0 +1,19 @@
+{
+  "schema_version": "meetnote.summary.v1",
+  "meeting_title": "离线会议助手三季度试点评审会",
+  "headline": "评审离线会议助手三季度试点方案及风险控制",
+  "overview": "会议聚焦于离线会议助手三季度试点项目的实施路径与风险管控，明确验收标准及责任归属。",
+  "topics": {
+    "title": "试点实施路径与风险",
+      "summary": "会议围绕试点实施路径、风险点及验收标准展开讨论，明确各环节责任归属及处理方式。",
+      "evidence_ids": ["utt-0", "utt-1", "utt-2", "utt-3", "utt-4", "utt-5", "utt-6", "utt-7", "utt-8", "utt-9", "utt-10"]
+    },
+  "decisions": [
+    {
+      "decision": "验收红线：任何纪要失败不能影响转写结果，不能导致应用或手机重启",
+      "owner": "张伟",
+      "status": "confirmed",
+      "evidence_ids": ["utt-4"]
+    }, 
+    {
+      "decision": "纪要中无证据的责任

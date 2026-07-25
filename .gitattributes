@@ -1,0 +1,2 @@
+fixtures/calibration/* -text -diff
+fixtures/teacher/* -text -diff
