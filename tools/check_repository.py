@@ -133,6 +133,14 @@ def validate_release_metadata() -> None:
     if tokenizer["model_revision"] != provenance["model"]["revision"]:
         raise ValueError("tokenizer validation used a different model revision")
 
+    source = json.loads((release / "source-manifest.json").read_text(encoding="utf-8"))
+    if source.get("format") != "meetnote.model_source_manifest.v1":
+        raise ValueError("unsupported model source manifest format")
+    if source["model"] != provenance["model"]:
+        raise ValueError("source manifest model differs from provenance")
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in source["files"].values()):
+        raise ValueError("model source checksum is not SHA-256")
+
 
 def validate_source_syntax(files: list[Path]) -> None:
     for path in files:

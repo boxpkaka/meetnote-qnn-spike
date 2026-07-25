@@ -32,6 +32,7 @@ Usage:
 Output:
   MNN_QNN_HOST_BUILD_DIR/generateIO
   MNN_QNN_HOST_BUILD_DIR/compilefornpu
+  MNN_QNN_HOST_BUILD_DIR/MNNConvert
 
 This only builds MNN's Linux x86_64 helper tools. Run
 tools/generate_mnn_qnn_artifacts.sh afterwards to generate config_qnn.json
@@ -69,7 +70,10 @@ cmake -S "$MNN_ROOT" -B "$MNN_QNN_HOST_BUILD_DIR" \
   -DMNN_QNN_CONVERT_MODE=ON \
   -DQNN_SDK_ROOT="$QNN_SDK_ROOT"
 
-cmake --build "$MNN_QNN_HOST_BUILD_DIR" --target generateIO compilefornpu -j"$(nproc)"
+cmake --build "$MNN_QNN_HOST_BUILD_DIR" \
+  --target MNNConvert generateIO compilefornpu \
+  -j"$(nproc)"
 
+file "$MNN_QNN_HOST_BUILD_DIR/MNNConvert"
 file "$MNN_QNN_HOST_BUILD_DIR/generateIO"
 file "$MNN_QNN_HOST_BUILD_DIR/compilefornpu"

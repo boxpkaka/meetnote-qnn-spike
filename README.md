@@ -96,3 +96,12 @@ python3 tools/check_repository.py --mnn-root third_party/MNN
 
 The full promotion procedure and tokenizer parity gate are documented in
 [`docs/releasing.md`](docs/releasing.md).
+
+The pinned end-to-end rebuild entry point is:
+
+```bash
+tools/rebuild_qwen3_4b_release.sh
+```
+
+It requires a local licensed QAIRT installation and an external work directory;
+neither SDK files nor generated model binaries are written into Git.
