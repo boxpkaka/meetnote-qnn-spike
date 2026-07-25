@@ -13,6 +13,27 @@ proprietary SDK files.
 6. Assemble the CPU-RoPE graphs without `--link-contexts` for publication.
 7. Verify every binary with `tools/verify_release_manifest.py`.
 
+The pinned Qwen3-4B release has a single orchestration entry point. `WORK_DIR`
+must be a new directory outside the repository and needs enough space for two
+QNN variants plus the assembled release:
+
+```bash
+MNN_ROOT=$PWD/third_party/MNN \
+MNN_BUILD_DIR=$PWD/third_party/MNN/build_qnn_host \
+HF_MODEL_DIR=/path/to/Qwen3-4B \
+QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
+PYTHON_BIN=/path/to/python-with-mnn-export-dependencies \
+WORK_DIR=/large-volume/meetnote-qnn-rebuild \
+tools/rebuild_qwen3_4b_release.sh
+```
+
+The command verifies the pinned source hashes before exporting. It refuses to
+reuse an existing work directory so that stale graph files cannot silently
+enter a release. By default it also requires a clean pinned MNN checkout,
+applies the project patches, and builds fresh host tools. Set
+`BUILD_MNN_TOOLS=false` only when separately testing the model stages with
+already verified host binaries.
+
 ## Numerical Gates
 
 Record each comparison separately:
