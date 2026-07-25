@@ -71,6 +71,35 @@ void appendJsonFloat(std::ostream& out, float value) {
     }
 }
 
+bool writeTokenIds(
+        const std::string& path,
+        const std::vector<int>& promptIds,
+        const std::vector<int>& referenceIds) {
+    if (path.empty()) {
+        return true;
+    }
+    std::ofstream output(path, std::ios::out | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+    auto writeArray = [&output](const std::vector<int>& values) {
+        output << "[";
+        for (size_t index = 0; index < values.size(); ++index) {
+            if (index > 0) {
+                output << ",";
+            }
+            output << values[index];
+        }
+        output << "]";
+    };
+    output << "{\"format\":\"meetnote.token_ids.v1\",\"prompt_ids\":";
+    writeArray(promptIds);
+    output << ",\"reference_ids\":";
+    writeArray(referenceIds);
+    output << "}\n";
+    return output.good();
+}
+
 int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -325,22 +354,40 @@ int parsePositiveInt(const char* value, const char* label) {
     return parsed;
 }
 
+int parseNonNegativeInt(const char* value, const char* label) {
+    std::istringstream input(value);
+    int parsed = -1;
+    input >> parsed;
+    if (!input || parsed < 0) {
+        std::cerr << label << " must be a non-negative integer\n";
+        return -1;
+    }
+    return parsed;
+}
+
 }  // namespace
 
 int main(int argc, const char* argv[]) {
-    if (argc < 5 || argc > 9) {
+    if (argc < 5 || argc > 10) {
         std::cerr
                 << "Usage: " << argv[0]
                 << " <config.json> <prompt.txt> <reference.txt> <output-prefix>"
-                << " [max-steps=48] [top-k=20] [threads=4] [trace-step=-1]\n";
+                << " [max-steps=48; 0=tokenize-only] [top-k=20] [threads=4]"
+                << " [trace-step=-1]"
+                << " [token-ids-output]\n";
         return 2;
     }
 
-    const int maxSteps = argc >= 6 ? parsePositiveInt(argv[5], "max-steps") : 48;
+    const int maxSteps = argc >= 6 ? parseNonNegativeInt(argv[5], "max-steps") : 48;
     const int topK = argc >= 7 ? parsePositiveInt(argv[6], "top-k") : 20;
     const int threads = argc >= 8 ? parsePositiveInt(argv[7], "threads") : 4;
     const int traceStep = argc >= 9 ? std::stoi(argv[8]) : -1;
+    const std::string tokenIdsOutput = argc >= 10 ? argv[9] : "";
     if (maxSteps < 0 || topK < 0 || threads < 0) {
+        return 2;
+    }
+    if (maxSteps == 0 && tokenIdsOutput.empty()) {
+        std::cerr << "token-ids-output is required when max-steps is 0\n";
         return 2;
     }
     if (traceStep >= maxSteps || traceStep < -1) {
@@ -404,6 +451,14 @@ int main(int argc, const char* argv[]) {
     llm->generate_init();
     const std::vector<int> inputIds = llm->tokenizer_encode(qwenChatPrompt(prompt));
     const std::vector<int> referenceIds = llm->tokenizer_encode(reference);
+    if (!writeTokenIds(tokenIdsOutput, inputIds, referenceIds)) {
+        std::cerr << "failed to write token IDs: " << tokenIdsOutput << "\n";
+        return 1;
+    }
+    if (maxSteps == 0) {
+        std::cout << "token IDs written to " << tokenIdsOutput << "\n";
+        return 0;
+    }
     if (referenceIds.size() < 2) {
         std::cerr << "reference must encode to at least two tokens\n";
         return 2;

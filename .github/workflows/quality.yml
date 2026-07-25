@@ -1,0 +1,37 @@
+name: Repository quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  repository:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: python3 tools/check_repository.py
+
+  mnn-patches:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the pinned MNN revision
+        run: |
+          git init third_party/MNN
+          git -C third_party/MNN remote add origin https://github.com/alibaba/MNN.git
+          git -C third_party/MNN fetch --depth=1 origin 0bff03cbef43c783f44e41484b9f8a0b28bd758d
+          git -C third_party/MNN checkout --detach FETCH_HEAD
+      - run: python3 tools/check_repository.py --mnn-root third_party/MNN

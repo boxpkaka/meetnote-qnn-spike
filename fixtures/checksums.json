@@ -1,0 +1,9 @@
+{
+  "format": "meetnote.fixture_checksums.v1",
+  "files": {
+    "fixtures/calibration/qnn-meeting-calibration-128.txt": "0a6c296d29b94063ff32d3b27b1596818fc624de8068e6b672202044e1edf42c",
+    "fixtures/teacher/prompt.txt": "4ff203ba9b8bee5bb2992c41e5c73be60f938c060240780a2b12e6ddc539e5c3",
+    "fixtures/teacher/reference.txt": "68218fdfbe8899fc8b870b9cd757f05b845469b800e5e84c92108e5163614385",
+    "fixtures/teacher/short-prompt.txt": "4e353214ac419290d5e029722db8f923bb3e663ba8a2853630b7c277d1955576"
+  }
+}

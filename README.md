@@ -79,3 +79,20 @@ and Hugging Face/MNN model artifacts must never be committed.
 
 The currently verified assembly metadata is under
 `releases/qwen3-4b-sm8850-v81-c64-rope-cpu/`.
+
+## Repository Checks
+
+Run the checks that do not require model weights or QAIRT:
+
+```bash
+python3 tools/check_repository.py
+```
+
+To also validate the project patches against a clean pinned MNN checkout:
+
+```bash
+python3 tools/check_repository.py --mnn-root third_party/MNN
+```
+
+The full promotion procedure and tokenizer parity gate are documented in
+[`docs/releasing.md`](docs/releasing.md).
