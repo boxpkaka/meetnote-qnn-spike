@@ -35,6 +35,11 @@ applies the project patches, and builds fresh host tools. Set
 `BUILD_MNN_TOOLS=false` only when separately testing the model stages with
 already verified host binaries.
 
+`EXPORTED_MODEL_SOURCE=/path/to/model` skips the expensive HF-to-MNN export
+when resuming from a separately verified export. The rebuild copies it through
+hard links and still reapplies and validates the wide-logits contract before
+QNN generation.
+
 `WORK_DIR` and `CACHE_ROOT` may use different filesystems. Keep the persistent
 models and final release under `WORK_DIR`; point `CACHE_ROOT` at fast
 ephemeral storage. The two model variants use hard links for their immutable

@@ -17,6 +17,7 @@ DSP_ARCH="${DSP_ARCH:-v81}"
 CHUNK_SIZE="${CHUNK_SIZE:-64}"
 MAX_HISTORY_TOKEN="${MAX_HISTORY_TOKEN:-0}"
 BUILD_MNN_TOOLS="${BUILD_MNN_TOOLS:-true}"
+EXPORTED_MODEL_SOURCE="${EXPORTED_MODEL_SOURCE:-}"
 
 die() {
   echo "ERROR: $*" >&2
@@ -109,27 +110,34 @@ if [[ -d /usr/include/c++ ]]; then
   done
 fi
 
-echo "[1/5] Exporting the pinned W4A16 MNN model"
-(
-  cd "$MNN_ROOT/transformers/llm/export"
-  /usr/bin/time -v "$PYTHON_BIN" llmexport.py \
-    --path "$HF_MODEL_DIR" \
-    --tokenizer_path "$HF_MODEL_DIR" \
-    --dst_path "$EXPORTED_MODEL" \
-    --export mnn \
-    --mnnconvert "$MNN_BUILD_DIR/MNNConvert" \
-    --quant_bit 4 \
-    --quant_block 64 \
-    --lm_quant_bit 4 \
-    --lm_quant_block 64 \
-    --seperate_embed \
-    --generate_for_npu \
-    --act_bit 16 \
-    --sym \
-    --omni \
-    --hqq \
-    --omni_epochs 1
-) 2>&1 | tee "$WORK_DIR/logs/export.log"
+if [[ -n "$EXPORTED_MODEL_SOURCE" ]]; then
+  echo "[1/5] Reusing a separately verified exported MNN model"
+  [[ -d "$EXPORTED_MODEL_SOURCE" ]] || \
+    die "EXPORTED_MODEL_SOURCE is not a directory: $EXPORTED_MODEL_SOURCE"
+  cp -al "$EXPORTED_MODEL_SOURCE" "$EXPORTED_MODEL"
+else
+  echo "[1/5] Exporting the pinned W4A16 MNN model"
+  (
+    cd "$MNN_ROOT/transformers/llm/export"
+    /usr/bin/time -v "$PYTHON_BIN" llmexport.py \
+      --path "$HF_MODEL_DIR" \
+      --tokenizer_path "$HF_MODEL_DIR" \
+      --dst_path "$EXPORTED_MODEL" \
+      --export mnn \
+      --mnnconvert "$MNN_BUILD_DIR/MNNConvert" \
+      --quant_bit 4 \
+      --quant_block 64 \
+      --lm_quant_bit 4 \
+      --lm_quant_block 64 \
+      --seperate_embed \
+      --generate_for_npu \
+      --act_bit 16 \
+      --sym \
+      --omni \
+      --hqq \
+      --omni_epochs 1
+  ) 2>&1 | tee "$WORK_DIR/logs/export.log"
+fi
 
 for file in config.json llm_config.json llm.mnn llm.mnn.weight; do
   require_file "$EXPORTED_MODEL/$file"
@@ -138,6 +146,12 @@ if [[ ! -f "$EXPORTED_MODEL/tokenizer.mtok" && \
       ! -f "$EXPORTED_MODEL/tokenizer.txt" ]]; then
   die "exported tokenizer is missing"
 fi
+
+echo "Applying the verified wide-logits quantization contract"
+"$PYTHON_BIN" "$SCRIPT_DIR/widen_mnn_logits.py" \
+  --mnn-convert "$MNN_BUILD_DIR/MNNConvert" \
+  --model "$EXPORTED_MODEL/llm.mnn" \
+  | tee "$WORK_DIR/logs/wide-logits.json"
 
 echo "[2/5] Creating isolated baseline and hybrid inputs"
 cp -al "$EXPORTED_MODEL" "$BASELINE_MODEL"
