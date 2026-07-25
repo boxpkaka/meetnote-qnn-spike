@@ -24,6 +24,7 @@ HF_MODEL_DIR=/path/to/Qwen3-4B \
 QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
 PYTHON_BIN=/path/to/python-with-mnn-export-dependencies \
 WORK_DIR=/large-volume/meetnote-qnn-rebuild \
+CACHE_ROOT=/fast-ephemeral-volume/meetnote-qnn-cache \
 tools/rebuild_qwen3_4b_release.sh
 ```
 
@@ -33,6 +34,11 @@ enter a release. By default it also requires a clean pinned MNN checkout,
 applies the project patches, and builds fresh host tools. Set
 `BUILD_MNN_TOOLS=false` only when separately testing the model stages with
 already verified host binaries.
+
+`WORK_DIR` and `CACHE_ROOT` may use different filesystems. Keep the persistent
+models and final release under `WORK_DIR`; point `CACHE_ROOT` at fast
+ephemeral storage. The two model variants use hard links for their immutable
+exported inputs, so `WORK_DIR` must support normal POSIX hard links.
 
 ## Numerical Gates
 
