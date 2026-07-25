@@ -93,6 +93,8 @@ fi
 require_exec "$MNN_BUILD_DIR/MNNConvert"
 require_exec "$MNN_BUILD_DIR/generateIO"
 require_exec "$MNN_BUILD_DIR/compilefornpu"
+grep -Fq '"vtcm_mb": 4' "$MNN_ROOT/source/backend/qnn/npu_convert.py" || \
+  die "MNN QNN converter does not contain the pinned 4 MiB VTCM budget"
 
 export QNN_SDK_ROOT
 export PATH="$QNN_SDK_ROOT/bin/x86_64-linux-clang:$PATH"

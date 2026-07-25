@@ -123,6 +123,8 @@ def validate_release_metadata() -> None:
         raise ValueError("provenance context count differs from the manifest")
     if provenance["assembly"]["wrapper_sha256"] != manifest["wrapper_sha256"]:
         raise ValueError("provenance wrapper checksum differs from the manifest")
+    if provenance["graph"].get("vtcm_mb") != 4:
+        raise ValueError("release VTCM budget must be pinned to 4 MiB")
 
     validation = json.loads((release / "validation.json").read_text(encoding="utf-8"))
     if validation.get("format") != "meetnote.qnn_release_validation.v1":
