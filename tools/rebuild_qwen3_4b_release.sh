@@ -11,6 +11,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 HF_MODEL_DIR="${HF_MODEL_DIR:-}"
 QNN_SDK_ROOT="${QNN_SDK_ROOT:-}"
 WORK_DIR="${WORK_DIR:-}"
+CACHE_ROOT="${CACHE_ROOT:-}"
 SOC_ID="${SOC_ID:-87}"
 DSP_ARCH="${DSP_ARCH:-v81}"
 CHUNK_SIZE="${CHUNK_SIZE:-64}"
@@ -36,6 +37,9 @@ require_exec() {
 [[ -n "$QNN_SDK_ROOT" ]] || die "QNN_SDK_ROOT is required"
 [[ -n "$WORK_DIR" ]] || die "WORK_DIR is required and must name a new directory"
 [[ ! -e "$WORK_DIR" ]] || die "WORK_DIR already exists: $WORK_DIR"
+if [[ -n "$CACHE_ROOT" ]]; then
+  [[ ! -e "$CACHE_ROOT" ]] || die "CACHE_ROOT already exists: $CACHE_ROOT"
+fi
 [[ "$SOC_ID" == "87" ]] || die "the pinned release requires SOC_ID=87"
 [[ "$DSP_ARCH" == "v81" ]] || die "the pinned release requires DSP_ARCH=v81"
 [[ "$CHUNK_SIZE" == "64" ]] || die "the pinned release requires CHUNK_SIZE=64"
@@ -48,12 +52,18 @@ require_exec "$QNN_SDK_ROOT/bin/x86_64-linux-clang/qnn-context-binary-generator"
 
 mkdir -p "$WORK_DIR/logs"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
+if [[ -z "$CACHE_ROOT" ]]; then
+  CACHE_ROOT="$WORK_DIR"
+else
+  mkdir -p "$CACHE_ROOT"
+  CACHE_ROOT="$(cd "$CACHE_ROOT" && pwd)"
+fi
 SOURCE_MANIFEST="$RELEASE_DIR/source-manifest.json"
 EXPORTED_MODEL="$WORK_DIR/exported-model"
 BASELINE_MODEL="$WORK_DIR/baseline-model"
 HYBRID_MODEL="$WORK_DIR/hybrid-model"
-BASELINE_CACHE="$WORK_DIR/baseline-cache"
-HYBRID_CACHE="$WORK_DIR/hybrid-cache"
+BASELINE_CACHE="$CACHE_ROOT/baseline-cache"
+HYBRID_CACHE="$CACHE_ROOT/hybrid-cache"
 OUTPUT_QNN="$WORK_DIR/release/qnn"
 
 "$PYTHON_BIN" "$SCRIPT_DIR/verify_source_manifest.py" \
@@ -130,8 +140,8 @@ if [[ ! -f "$EXPORTED_MODEL/tokenizer.mtok" && \
 fi
 
 echo "[2/5] Creating isolated baseline and hybrid inputs"
-cp -a "$EXPORTED_MODEL" "$BASELINE_MODEL"
-cp -a "$EXPORTED_MODEL" "$HYBRID_MODEL"
+cp -al "$EXPORTED_MODEL" "$BASELINE_MODEL"
+cp -al "$EXPORTED_MODEL" "$HYBRID_MODEL"
 
 COMMON_GENERATOR_ARGS=(
   --model
@@ -188,14 +198,14 @@ echo "[5/5] Assembling and verifying the 39-context release"
 "$PYTHON_BIN" "$SCRIPT_DIR/verify_release_manifest.py" "$OUTPUT_QNN" \
   | tee "$WORK_DIR/logs/release-verification.json"
 
-"$PYTHON_BIN" - "$WORK_DIR" "$REPO_ROOT" "$MNN_ROOT" <<'PY'
+"$PYTHON_BIN" - "$WORK_DIR" "$CACHE_ROOT" "$REPO_ROOT" "$MNN_ROOT" <<'PY'
 import json
 import platform
 import subprocess
 import sys
 from pathlib import Path
 
-work_dir, repo_root, mnn_root = map(Path, sys.argv[1:])
+work_dir, cache_root, repo_root, mnn_root = map(Path, sys.argv[1:])
 record = {
     "format": "meetnote.clean_rebuild.v1",
     "repository_revision": subprocess.check_output(
@@ -206,6 +216,7 @@ record = {
     ).strip(),
     "platform": platform.platform(),
     "work_dir": str(work_dir),
+    "cache_root": str(cache_root),
     "status": "server-build-complete",
 }
 (work_dir / "rebuild.json").write_text(
