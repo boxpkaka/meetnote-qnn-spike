@@ -24,6 +24,7 @@
   "graph": {
     "chunk_size": 64,
     "max_history_token": 0,
+    "vtcm_mb": 4,
     "cpu_ops": [
       "rope_phase_multiply",
       "rope_sin",

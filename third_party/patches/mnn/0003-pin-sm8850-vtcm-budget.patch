@@ -1,0 +1,12 @@
+diff --git a/source/backend/qnn/npu_convert.py b/source/backend/qnn/npu_convert.py
+index 2806adb2..dbb64877 100644
+--- a/source/backend/qnn/npu_convert.py
++++ b/source/backend/qnn/npu_convert.py
+@@ -110,6 +110,6 @@ htp_backend_extensions = {
+     "graphs": [
+         {
+-            "vtcm_mb": 8,
++            "vtcm_mb": 4,
+             "O": 3.0,
+             "fp16_relaxed_precision": 1,
+             "hvx_threads": 4

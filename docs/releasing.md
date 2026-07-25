@@ -13,6 +13,10 @@ proprietary SDK files.
 6. Assemble the CPU-RoPE graphs without `--link-contexts` for publication.
 7. Verify every binary with `tools/verify_release_manifest.py`.
 
+The SM8850 release pins the QNN HTP graph VTCM budget to 4 MiB through
+`0003-pin-sm8850-vtcm-budget.patch`. This value affects context compilation
+and is part of the binary provenance, not a runtime-only tuning knob.
+
 The pinned Qwen3-4B release has a single orchestration entry point. `WORK_DIR`
 must be a new directory outside the repository and needs enough space for two
 QNN variants plus the assembled release:
