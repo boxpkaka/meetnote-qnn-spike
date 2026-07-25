@@ -2,8 +2,9 @@
 
 ## Status
 
-The server rebuild is complete. It is not yet a publishable replacement because
-no SM8850 device was connected for the final HTP gate.
+The clean rebuild reproduced the validated SM8850 numerical behavior. The QNN
+context binaries are not byte-identical, so the retained release manifest and
+tag remain the canonical published artifacts.
 
 ## Root Cause Found During Rebuild
 
@@ -36,17 +37,33 @@ bytes, exactly matching the validated release's per-context sizes and total.
   generated `mnn_uuid`; their raw hashes differed.
 
 The context byte differences are therefore consistent with generated tensor
-ordering and host-tool build output, but server metadata comparison cannot
-prove HTP numerical equivalence.
+ordering and host-tool build output. The device results below establish the
+required numerical equivalence.
 
-## Remaining Gate
+## Device Gate
 
-Run the focused and realistic teacher-forced probes on the Vivo V2505A
-SM8850/V81 device, retain result JSON, full logits, and logcat, and require:
+The rebuilt release was deployed to a separate model directory on a Vivo
+V2505A with SM8850, Android 16, and the QAIRT/QNN 2.48 V81 runtime. All 40
+wrapper and context hashes were verified on-device before execution.
 
-1. focused fixture top-1 agreement of 25/25;
-2. realistic fixture top-1 agreement of 43/48 or better;
-3. no context-load failure, DSP SSR, or non-finite logits.
+| Probe | Result |
+|---|---:|
+| focused top-1 agreement | 25/25 |
+| focused logits range | -41.000 to 54.031 |
+| realistic top-1 agreement | 47/48 |
+| realistic cosine mean / min | 0.9480 / 0.5839 |
+| realistic top-20 overlap | 16.58 / 20 |
+| sampled peak RSS | 1,056,148 KiB |
+| warm realistic instrumentation time | 26.6 seconds |
 
-Do not replace the validated manifest or release tag until this device gate
-passes.
+The 48-step realistic logits were byte-identical across two rebuilt runs and
+the retained validated CPU-RoPE run. All three `.f32` files have SHA-256
+`8719be74547b22c22b014bd85a9c5b22d3374c33ad0a79daeb259b2432aecdc2`.
+There was no process crash, DSP SSR, or non-finite output, and device uptime
+remained continuous.
+
+QNN still logged two failed attempts to map the shared weights for context ID
+39 (`map result 8003`, `err 1002`) before completing successfully. This is the
+same retained runtime-warning class seen before the clean rebuild, not a
+numerical regression. It remains tracked separately in issue 8; the QNN path
+stays experimental until that memory-mapping boundary is resolved.
