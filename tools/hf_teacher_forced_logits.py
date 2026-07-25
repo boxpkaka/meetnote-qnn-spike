@@ -73,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--output-prefix", type=Path)
     parser.add_argument("--expected-metadata", type=Path)
+    parser.add_argument("--token-ids-output", type=Path)
     parser.add_argument("--max-steps", type=int, default=48)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--threads", type=int, default=32)
@@ -96,6 +97,21 @@ def main() -> None:
     reference = args.reference.read_text(encoding="utf-8")
     prompt_ids = tokenizer.encode(qwen_chat_prompt(user_prompt), add_special_tokens=False)
     reference_ids = tokenizer.encode(reference, add_special_tokens=False)
+
+    if args.token_ids_output:
+        args.token_ids_output.parent.mkdir(parents=True, exist_ok=True)
+        args.token_ids_output.write_text(
+            json.dumps(
+                {
+                    "format": "meetnote.token_ids.v1",
+                    "prompt_ids": prompt_ids,
+                    "reference_ids": reference_ids,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     if args.expected_metadata:
         validate_token_contract(prompt_ids, reference_ids, args.expected_metadata)

@@ -1,0 +1,12 @@
+{
+  "format": "meetnote.qnn_release_validation.v1",
+  "tokenizer_parity": {
+    "validated_at": "2026-07-25",
+    "model_revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "mnn_revision": "0bff03cbef43c783f44e41484b9f8a0b28bd758d",
+    "fixture_checksums": "fixtures/checksums.json",
+    "prompt_tokens": 2079,
+    "reference_tokens": 256,
+    "exact_token_id_match": true
+  }
+}
