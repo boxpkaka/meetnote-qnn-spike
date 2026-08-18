@@ -1,0 +1,55 @@
+{
+  "format": "meetnote.cpu_candidate_server_validation.v1",
+  "release_id": "qwen3-4b-sm8850-v81-c64-rope-cpu-export-v1",
+  "validated_at": "2026-08-07",
+  "stage": "device-validation-required",
+  "production_ready": false,
+  "export_determinism": {
+    "runs": 2,
+    "llm_weight_sha256": "ecafb34af1f5fe9f837113cc58f5b3807ca26239982546725175d0b8ff413e5c",
+    "canonical_mnn_sha256": "fffcfead73f6e1f6428a7e25402b2c1329a43642457de92b287c849be4b7532c"
+  },
+  "tokenizer": {
+    "prompt_tokens": 2079,
+    "reference_tokens": 256,
+    "cpu_cuda_hf_exact_match": true
+  },
+  "teacher_forced_255_step": {
+    "cpu_vs_cuda": {
+      "top1_agreement": 0.9686274509803922,
+      "cosine_mean": 0.9712288235714645,
+      "cosine_min": -0.1241012215088907,
+      "top20_overlap_mean": 18.20392156862745
+    },
+    "cpu_vs_hf": {
+      "top1_agreement": 0.9215686274509803,
+      "cosine_mean": 0.9131186523201,
+      "cosine_min": -0.2607121898700112,
+      "top20_overlap_mean": 16.44313725490196
+    },
+    "cuda_vs_hf": {
+      "top1_agreement": 0.9372549019607843,
+      "cosine_mean": 0.9065100704242864,
+      "cosine_min": 0.3553362551057882,
+      "top20_overlap_mean": 16.435294117647057
+    },
+    "known_cpu_outlier": {
+      "step": 227,
+      "input_piece": "confirmed",
+      "target_piece": "\",\n",
+      "top1_same_as_hf": true,
+      "cosine": -0.2607121898700112,
+      "top20_overlap": 10
+    }
+  },
+  "qnn_assembly": {
+    "contexts": 39,
+    "context_bytes": 2141081600,
+    "wrapper_sha256": "bb7ef4a9615f26d6b6a90eba4b74e41853008d951d510a64d8383f90a70416f9",
+    "assembly_manifest_sha256": "4f3153ebed3faa088790d36893ae690472c991b823aa3ac11df1697316df41d9",
+    "manifest_status": "valid",
+    "extra_files": []
+  },
+  "gate_record_sha256": "1de63bd6d83e6b484260f4e2bef108a8da96f86a108d3e7d2829c694dbccedff",
+  "remaining_gate": "SM8850/v81 device validation bound to this weight and assembly manifest"
+}

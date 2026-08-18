@@ -1,0 +1,33 @@
+{
+  "format": "meetnote.cpu_export_candidate.v1",
+  "release_id": "qwen3-4b-sm8850-v81-c64-rope-cpu-export-v1",
+  "model": {
+    "id": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+  },
+  "mnn": {
+    "revision": "0bff03cbef43c783f44e41484b9f8a0b28bd758d"
+  },
+  "export": {
+    "device": "cpu",
+    "python": "3.13",
+    "torch": "2.8.0+cpu",
+    "llm_weight_sha256": "ecafb34af1f5fe9f837113cc58f5b3807ca26239982546725175d0b8ff413e5c"
+  },
+  "qairt": {
+    "version": "2.48.40.260702",
+    "soc_id": 87,
+    "dsp_arch": "v81"
+  },
+  "policy": {
+    "determinism_min_runs": 2,
+    "quality": {
+      "minimum_teacher_steps": 255,
+      "minimum_cpu_cuda_top1": 0.9,
+      "maximum_hf_top1_regression": 0.02,
+      "maximum_hf_cosine_regression": 0.03
+    },
+    "require_qnn_manifest": true,
+    "require_sm8850_device_validation": true
+  }
+}

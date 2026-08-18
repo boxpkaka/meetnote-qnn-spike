@@ -71,6 +71,17 @@ void appendJsonFloat(std::ostream& out, float value) {
     }
 }
 
+void writeJsonIntArray(std::ostream& output, const std::vector<int>& values) {
+    output << "[";
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (index > 0) {
+            output << ",";
+        }
+        output << values[index];
+    }
+    output << "]";
+}
+
 bool writeTokenIds(
         const std::string& path,
         const std::vector<int>& promptIds,
@@ -82,20 +93,10 @@ bool writeTokenIds(
     if (!output.is_open()) {
         return false;
     }
-    auto writeArray = [&output](const std::vector<int>& values) {
-        output << "[";
-        for (size_t index = 0; index < values.size(); ++index) {
-            if (index > 0) {
-                output << ",";
-            }
-            output << values[index];
-        }
-        output << "]";
-    };
     output << "{\"format\":\"meetnote.token_ids.v1\",\"prompt_ids\":";
-    writeArray(promptIds);
+    writeJsonIntArray(output, promptIds);
     output << ",\"reference_ids\":";
-    writeArray(referenceIds);
+    writeJsonIntArray(output, referenceIds);
     output << "}\n";
     return output.good();
 }
@@ -516,7 +517,11 @@ int main(int argc, const char* argv[]) {
                      << ",\"dtype\":\"float32_le\""
                      << ",\"prompt_tokens\":" << inputIds.size()
                      << ",\"reference_tokens\":" << referenceIds.size()
-                     << ",\"steps\":" << steps
+                     << ",\"prompt_ids\":";
+            writeJsonIntArray(metadata, inputIds);
+            metadata << ",\"reference_ids\":";
+            writeJsonIntArray(metadata, referenceIds);
+            metadata << ",\"steps\":" << steps
                      << ",\"vocab_size\":" << vocabSize
                      << ",\"top_k\":" << topK
                      << "}\n";

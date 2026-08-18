@@ -11,7 +11,13 @@ function readProbe(prefix) {
     .map((line) => JSON.parse(line));
   const header = records.find((record) => record.type === "header");
   const steps = records.filter((record) => record.type === "step");
-  if (!header || steps.length !== header.steps) {
+  const footer = records.find((record) => record.type === "footer");
+  if (
+    !header ||
+    !footer ||
+    footer.steps_written !== header.steps ||
+    steps.length !== header.steps
+  ) {
     throw new Error(`invalid probe metadata: ${prefix}`);
   }
   const logits = fs.readFileSync(`${prefix}.f32`);

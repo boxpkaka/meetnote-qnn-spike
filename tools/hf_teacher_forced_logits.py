@@ -8,7 +8,6 @@ import json
 import time
 from pathlib import Path
 
-
 SYSTEM_PROMPT = (
     "你是 MeetNote 的端侧会议纪要结构化抽取引擎。"
     "不要输出思考过程，不要输出 Markdown，只输出用户要求的 JSON。"
@@ -175,6 +174,8 @@ def main() -> None:
             "attention": "sdpa",
             "prompt_tokens": len(prompt_ids),
             "reference_tokens": len(reference_ids),
+            "prompt_ids": prompt_ids,
+            "reference_ids": reference_ids,
             "steps": steps,
             "vocab_size": model.config.vocab_size,
             "top_k": args.top_k,
