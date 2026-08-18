@@ -1,0 +1,6 @@
+# CPU export overlay. The base lock keeps every non-Torch package identical to
+# the validated CUDA environment; the local-version pin selects the official
+# CPU-only PyTorch wheel.
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements-export.lock
+torch==2.8.0+cpu

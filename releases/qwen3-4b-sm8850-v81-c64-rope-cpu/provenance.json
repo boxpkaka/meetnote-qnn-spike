@@ -21,6 +21,9 @@
     "hqq": true,
     "omniquant": true
   },
+  "export": {
+    "llm_weight_sha256": "b096a22a1d61fff84a77c2277202eeafba3802df941b7eef711f3faf570558db"
+  },
   "graph": {
     "chunk_size": 64,
     "max_history_token": 0,

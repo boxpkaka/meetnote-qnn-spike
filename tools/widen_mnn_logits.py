@@ -11,7 +11,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 TARGET_TENSORS = {
     "/lm/lm_head/Linear",
     "/lm/lm_head/Linear/post_convert",
@@ -98,7 +97,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     model = args.model.resolve()
-    with tempfile.TemporaryDirectory(prefix="meetnote-wide-logits-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix=".meetnote-wide-logits-", dir=model.parent
+    ) as directory:
         temporary = Path(directory)
         source_json = temporary / "source.json"
         output_model = temporary / "llm.mnn"

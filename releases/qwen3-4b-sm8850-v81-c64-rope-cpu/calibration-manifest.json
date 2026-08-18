@@ -1,0 +1,19 @@
+{
+  "format": "meetnote.omni_calibration_manifest.v1",
+  "dataset": {
+    "id": "Salesforce/wikitext",
+    "configuration": "wikitext-2-raw-v1",
+    "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+    "split": "train"
+  },
+  "selection": {
+    "shuffle_seed": 42,
+    "non_empty_samples": 128,
+    "tokenization": "raw text, max_length=512, truncation=true"
+  },
+  "file": {
+    "name": "meetnote-omni-wikitext-128.jsonl",
+    "bytes": 55592,
+    "sha256": "94a2a06a7007b04aec33c361c5e45ead3aa3f094e32107995751387492d1508e"
+  }
+}

@@ -39,21 +39,49 @@ and Hugging Face/MNN model artifacts must never be committed.
 
 ## Build Flow
 
-1. Check out MNN at the pinned revision under `third_party/MNN`.
-2. Apply the patches:
+1. Create the pinned Linux host environment:
+
+   ```bash
+   tools/bootstrap_environment.sh
+   source .venv/bin/activate
+   ```
+
+   The validated release export uses CUDA and a separate Python 3.13
+   environment:
+
+   ```bash
+   PROFILE=export tools/bootstrap_environment.sh
+   source .venv-export/bin/activate
+   ```
+
+   A CPU-only export profile is also available for reproducibility and parity
+   work. It uses the official PyTorch CPU wheel. An ordinary CPU run is limited
+   to `EXPORT_ONLY=true`; only the separately identified `cpu-candidate`
+   workflow can enter QNN generation after the determinism and numerical gates
+   in `docs/releasing.md` pass:
+
+   ```bash
+   PROFILE=export-cpu tools/bootstrap_environment.sh
+   source .venv-export-cpu/bin/activate
+   EXPORT_DEVICE=cpu EXPORT_ONLY=true \
+   tools/rebuild_qwen3_4b_release.sh
+   ```
+
+2. Check out MNN at the pinned revision under `third_party/MNN`.
+3. Apply the patches:
 
    ```bash
    tools/apply_mnn_patches.sh
    ```
 
-3. Build Linux x86_64 host tools:
+4. Build Linux x86_64 host tools:
 
    ```bash
    QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
    tools/build_mnn_qnn_host_tools.sh
    ```
 
-4. Generate the baseline C64 QNN graphs:
+5. Generate the baseline C64 QNN graphs:
 
    ```bash
    QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
@@ -62,9 +90,9 @@ and Hugging Face/MNN model artifacts must never be committed.
    tools/generate_mnn_qnn_artifacts.sh
    ```
 
-5. Run teacher-forced alignment in three stages:
+6. Run teacher-forced alignment in three stages:
    `HF BF16 -> MNN CPU W4A16 -> QNN/HTP`.
-6. Assemble the CPU-RoPE prefix with the verified QNN suffix and publish only
+7. Assemble the CPU-RoPE prefix with the verified QNN suffix and publish only
    after every manifest hash and device quality gate passes.
 
 ## Required Release Checks
@@ -105,3 +133,21 @@ tools/rebuild_qwen3_4b_release.sh
 
 It requires a local licensed QAIRT installation and an external work directory;
 neither SDK files nor generated model binaries are written into Git.
+
+Run only the complete environment and storage preflight without creating a
+build directory:
+
+```bash
+QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
+HF_MODEL_DIR=/path/to/Qwen3-4B \
+CALIBRATION_DATA=/path/to/meetnote-omni-wikitext-128.jsonl \
+WORK_DIR=/large-volume/new-rebuild \
+PREFLIGHT_ONLY=true BUILD_MNN_TOOLS=false \
+tools/rebuild_qwen3_4b_release.sh
+```
+
+After an interrupted build, use the same inputs with `RESUME=true`. Completed
+stages are reused only when their build fingerprint and required outputs match.
+
+Server-side AliMeeting and MeetingBank normalization is documented in
+[`docs/server-dataset-preparation.md`](docs/server-dataset-preparation.md).

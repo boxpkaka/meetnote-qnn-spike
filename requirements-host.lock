@@ -1,0 +1,4 @@
+# Minimal Linux x86_64 host-tool environment. Model export uses the separate
+# requirements-export.lock profile.
+cmake==4.4.2
+ninja==1.13.0

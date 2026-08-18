@@ -1,0 +1,43 @@
+diff --git a/transformers/llm/export/utils/omni_quantizer.py b/transformers/llm/export/utils/omni_quantizer.py
+index b1f6e78..cf134b6 100644
+--- a/transformers/llm/export/utils/omni_quantizer.py
++++ b/transformers/llm/export/utils/omni_quantizer.py
+@@ -5,0 +6 @@ import inspect
++import os
+@@ -69,0 +71,12 @@ class OmniQuantizer:
++        requested_device = os.getenv("MNN_OMNI_EXPORT_DEVICE", "auto")
++        if requested_device == "cpu":
++            return "cpu"
++        if requested_device == "cuda":
++            if not torch.cuda.is_available():
++                raise RuntimeError("MNN_OMNI_EXPORT_DEVICE=cuda but CUDA is unavailable")
++            return "cuda:0"
++        if requested_device != "auto":
++            raise ValueError(
++                "MNN_OMNI_EXPORT_DEVICE must be auto, cuda, or cpu; "
++                f"got {requested_device!r}"
++            )
+@@ -96,0 +110 @@ class OmniQuantizer:
++        raw_jsonl_data = False
+@@ -102,0 +117,6 @@ class OmniQuantizer:
++            elif data.endswith(".jsonl"):
++                raw_jsonl_data = True
++                with open(data, 'r', encoding='utf-8') as f:
++                    dataset = [json.loads(line) for line in f if line.strip()]
++                if any(not isinstance(text, str) for text in dataset):
++                    raise ValueError("raw calibration JSONL must contain one JSON string per line")
+@@ -111 +131 @@ class OmniQuantizer:
+-        if custom_calib_data == False:
++        if not custom_calib_data and not raw_jsonl_data:
+@@ -132,0 +153,7 @@ class OmniQuantizer:
++        elif raw_jsonl_data:
++            for text in dataset[:n_samples]:
++                input_ids = tokenizer(
++                    text, return_tensors="pt", max_length=max_seq_len, truncation=True
++                ).input_ids
++                if input_ids.numel() > 0:
++                    samples.append(input_ids)
+@@ -228,0 +256,3 @@ class OmniQuantizer:
++        elif os.getenv("MNN_OMNI_EXPORT_DEVICE") == "cpu":
++            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
++                out = module(x, **module_kwargs)

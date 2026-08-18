@@ -6,6 +6,11 @@
 !/.gitattributes
 !/.github/
 !/README.md
+!/pyproject.toml
+!/requirements-export.lock
+!/requirements-export-cpu.lock
+!/requirements-host.lock
+!/requirements-dev.lock
 !/docs/
 !/experiments/
 !/fixtures/
