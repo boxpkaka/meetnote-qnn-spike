@@ -1,0 +1,186 @@
+diff --git a/transformers/llm/engine/src/omni.cpp b/transformers/llm/engine/src/omni.cpp
+index 5adba3f..5dd44b4 100644
+--- a/transformers/llm/engine/src/omni.cpp
++++ b/transformers/llm/engine/src/omni.cpp
+@@ -159,9 +159,24 @@ bool Omni::load() {
+         }
+     }
+     if (mConfig->is_audio()) {
+-        mAudioModule.reset(Module::load({}, {}, mConfig->audio_model().c_str(), mProcessorRuntimeManager, &module_config));
+-        if (nullptr == mAudioModule.get()) {
+-            return false;
++        if (mConfig->audio_type() == "moss_transcribe_diarize") {
++            auto frontModel = mConfig->base_dir_ + mConfig->config_.value(
++                "audio_front_model", "audio_encoder_front.mnn");
++            auto backModel = mConfig->base_dir_ + mConfig->config_.value(
++                "audio_back_model", "audio_encoder_back.mnn");
++            mAudioFrontModule.reset(
++                Module::load({}, {}, frontModel.c_str(), mProcessorRuntimeManager, &module_config));
++            mAudioBackModule.reset(
++                Module::load({}, {}, backModel.c_str(), mProcessorRuntimeManager, &module_config));
++            if (nullptr == mAudioFrontModule.get() || nullptr == mAudioBackModule.get()) {
++                return false;
++            }
++        } else {
++            mAudioModule.reset(
++                Module::load({}, {}, mConfig->audio_model().c_str(), mProcessorRuntimeManager, &module_config));
++            if (nullptr == mAudioModule.get()) {
++                return false;
++            }
+         }
+     }
+     mContext->status = LlmStatus::RUNNING;  // Set status to RUNNING after successful load
+@@ -862,16 +877,17 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+         input_features = MNN::AUDIO::conformer_fbank(waveform);
+     } else if (audio_type == "usm") {
+         input_features = MNN::AUDIO::usm_fbank(waveform);
+-    } else {
++    } else if (audio_type != "moss_transcribe_diarize") {
+         input_features = MNN::AUDIO::whisper_fbank(waveform);
+     }
+-    if (input_features == nullptr || input_features->getInfo() == nullptr) {
++    if (audio_type != "moss_transcribe_diarize" &&
++        (input_features == nullptr || input_features->getInfo() == nullptr)) {
+         MNN_PRINT("Omni audio fbank failed\n");
+         return std::vector<int>(0);
+     }
+     // Materialize fbank output: fbank returns a lazy VARP with computation graph
+     // dependencies that can crash Module::forward when using a different RuntimeManager.
+-    {
++    if (audio_type != "moss_transcribe_diarize") {
+         auto info = input_features->getInfo();
+         auto ptr = input_features->readMap<float>();
+         auto fresh = _Input(info->dim, NCHW, halide_type_of<float>());
+@@ -880,7 +896,43 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+     }
+     // pMeta isolation handled by per-RTM RuntimeAttr::mPMeta; no reset needed.
+     VARP audio_embedding;
+-    if (mAudioModule->getInfo()->inputNames.size() > 1) {
++    if (audio_type == "moss_transcribe_diarize") {
++        constexpr int chunkSamples = 30 * 16000;
++        constexpr int sampleStride = 1280;
++        int samples = waveform->getInfo()->size;
++        if (samples <= 0) {
++            MNN_ERROR("MOSS audio must contain at least one sample\n");
++            return std::vector<int>(0);
++        }
++        if (samples > 300 * 16000) {
++            MNN_ERROR("MOSS QNN PoC supports at most 300 seconds of audio\n");
++            return std::vector<int>(0);
++        }
++        std::vector<VARP> chunkEmbeddings;
++        for (int start = 0; start < samples; start += chunkSamples) {
++            int validSamples = std::min(chunkSamples, samples - start);
++            auto chunk = _Slice(
++                waveform, _var<int>({start}, {1}), _var<int>({validSamples}, {1}));
++            auto features = MNN::AUDIO::whisper_fbank(chunk, 16000, 80, 400, 160, 30);
++            if (features == nullptr || features->getInfo() == nullptr) {
++                MNN_ERROR("MOSS audio fbank failed\n");
++                return std::vector<int>(0);
++            }
++            auto featureInfo = features->getInfo();
++            auto featureCopy = _Input(featureInfo->dim, NCHW, halide_type_of<float>());
++            ::memcpy(
++                featureCopy->writeMap<float>(), features->readMap<float>(),
++                featureInfo->size * sizeof(float));
++            features = featureCopy;
++            auto front = mAudioFrontModule->forward(features);
++            auto back = mAudioBackModule->forward(front);
++            int validTokens = UP_DIV(validSamples, sampleStride);
++            back = _Slice(
++                back, _var<int>({0, 0, 0}, {3}), _var<int>({1, validTokens, -1}, {3}));
++            chunkEmbeddings.push_back(back);
++        }
++        audio_embedding = _Concat(chunkEmbeddings, 1);
++    } else if (mAudioModule->getInfo()->inputNames.size() > 1) {
+         int seqlen = UP_DIV(input_features->getInfo()->dim[2], 2);
+         constexpr int n_window = 100;
+         std::vector<int> cu_seqlens = buildOmniAudioWindowBoundaries(seqlen, n_window);
+@@ -925,7 +977,28 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+     }
+     int embed_len = audio_embedding->getInfo()->dim[0];
+     addPositionIds(embed_len);
+-    std::vector<int> audio_ids(embed_len, mAudioPad);
++    std::vector<int> audio_ids;
++    if (audio_type == "moss_transcribe_diarize") {
++        constexpr int tokensPerMarker = 25;
++        int consumed = 0;
++        int duration = static_cast<int>(embed_len / 12.5f);
++        for (int second = 2; second <= duration; second += 2) {
++            int position = (second / 2) * tokensPerMarker;
++            audio_ids.insert(audio_ids.end(), position - consumed, mAudioPad);
++            consumed = position;
++            for (char digit : std::to_string(second)) {
++                auto digitIds = tokenizer_encode(std::string(1, digit));
++                if (digitIds.size() != 1) {
++                    MNN_ERROR("MOSS time marker digit is not one tokenizer token\n");
++                    return std::vector<int>(0);
++                }
++                audio_ids.push_back(digitIds[0]);
++            }
++        }
++        audio_ids.insert(audio_ids.end(), embed_len - consumed, mAudioPad);
++    } else {
++        audio_ids.assign(embed_len, mAudioPad);
++    }
+     if (mAudioStart >= 0) {
+         audio_ids.insert(audio_ids.begin(), mAudioStart);
+     }
+@@ -1126,7 +1199,7 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
+     std::vector<VARP> embeddings;
+     std::vector<VARP> deepstacks;
+     std::vector<int> position_ids;
+-    int vision_idx = 0, audio_idx = 0;
++    int vision_idx = 0, audio_idx = 0, moss_audio_offset = 0;
+     std::vector<int> cur_txt_ids;
+     bool inVision = false, inAudio = false;
+     bool hasDeepStack = !mDeepStackEmbeddings.empty();
+@@ -1142,6 +1215,35 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
+     };
+     for (int i = 0; i < input_ids.size(); i++) {
+         int id = input_ids[i];
++        if (mConfig->audio_type() == "moss_transcribe_diarize" && id == mAudioPad) {
++            int run = 1;
++            while (i + run < input_ids.size() && input_ids[i + run] == mAudioPad) {
++                ++run;
++            }
++            auto txt_embedding = Llm::embedding(cur_txt_ids);
++            if (txt_embedding == nullptr || audio_idx >= mAudioEmbeddings.size()) {
++                return nullptr;
++            }
++            auto all_audio = mAudioEmbeddings[audio_idx];
++            int available = all_audio->getInfo()->dim[0] - moss_audio_offset;
++            if (run > available) {
++                MNN_ERROR("MOSS audio placeholder count exceeds embedding count\n");
++                return nullptr;
++            }
++            auto span = _Slice(
++                all_audio, _var<int>({moss_audio_offset, 0, 0}, {3}),
++                _var<int>({run, -1, -1}, {3}));
++            embeddings.push_back(txt_embedding);
++            embeddings.push_back(span);
++            cur_txt_ids.clear();
++            moss_audio_offset += run;
++            if (moss_audio_offset == all_audio->getInfo()->dim[0]) {
++                ++audio_idx;
++                moss_audio_offset = 0;
++            }
++            i += run - 1;
++            continue;
++        }
+         // audio
+         if (inAudio) {
+             if (id == mAudioPad) {
+diff --git a/transformers/llm/engine/src/omni.hpp b/transformers/llm/engine/src/omni.hpp
+index 5ab8c9f..860c161 100644
+--- a/transformers/llm/engine/src/omni.hpp
++++ b/transformers/llm/engine/src/omni.hpp
+@@ -183,7 +183,7 @@ private:
+     std::vector<int> processAudioContent(const std::string& content, const std::map<std::string, PromptAudioPart>& audios);
+     void responseInterleaved(const std::vector<int>& input_ids, std::ostream* os, const char* end_with,
+                              int max_new_tokens);
+-    std::shared_ptr<Module> mVisionModule, mAudioModule;
++    std::shared_ptr<Module> mVisionModule, mAudioModule, mAudioFrontModule, mAudioBackModule;
+     std::vector<VARP> mExtraArgs, mVisionEmbeddings, mAudioEmbeddings, mDeepStackEmbeddings;
+     std::shared_ptr<Talker> mTalker;
+     int64_t mThinkerElapsedUs = 0;

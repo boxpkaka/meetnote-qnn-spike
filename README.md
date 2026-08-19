@@ -108,6 +108,69 @@ and Hugging Face/MNN model artifacts must never be committed.
 The currently verified assembly metadata is under
 `releases/qwen3-4b-sm8850-v81-c64-rope-cpu/`.
 
+## MOSS Transcribe-Diarize PoC
+
+The SM8850 (Snapdragon 8 Elite Gen 5) PoC splits the fixed 30-second Whisper path into two FP16 HTP
+graphs and uses a W8A16 Qwen3-0.6B decoder with CPU attention/RoPE and HTP
+projection, FFN, and lm_head graphs. Prepare the external
+128-window calibration archive with `tools/prepare_moss_calibration.py`, then
+run the pinned build outside the repository:
+
+```bash
+MODEL_DIR=/path/to/MOSS-Transcribe-Diarize \
+CALIBRATION_ARCHIVE=/path/to/calibration.npz \
+CALIBRATION_MANIFEST=/path/to/calibration-manifest.json \
+QNN_SDK_ROOT=/path/to/qairt/2.48.40.260702 \
+ANDROID_NDK_ROOT=/path/to/android-ndk \
+WORK_DIR=/large-volume/moss-poc \
+tools/rebuild_moss_transcribe_diarize_qnn.sh
+```
+
+The host must provide `clang++` and a loadable `libc++.so.1` for the QAIRT host
+tools (set `LD_LIBRARY_PATH` when it is not installed system-wide).
+`CALIBRATION_LOGITS_MAX_ABS` is optional and otherwise comes from the
+calibration manifest.
+
+The runner accepts `config.json input.wav [hotwords]` and emits raw text,
+parsed segments, stage timings, RTF, and peak PSS as JSON. The checked-in
+release record remains explicitly non-production-ready until
+`tools/verify_moss_validation.py` accepts component, AliMeeting, and SM8850
+device evidence. QAIRT 2.48.40 identifies SM8850 as SoC model `87`, Hexagon
+`v81`, with 8 MiB VTCM and 8 HVX threads; the rebuild pins those values
+explicitly. Full HTP attention needs 16 MiB for its 8192-token key slice, so
+the runnable candidate keeps fused attention on CPU instead.
+
+After the build, run the external payload on an attached SM8850 device with:
+
+```bash
+tools/run_moss_sm8850.sh /large-volume/moss-poc/release input.wav [hotwords]
+```
+
+`tools/verify_moss_audio_mnn.py` performs the intermediate HF FP32 to MNN CPU
+audio-graph comparison using the same official `input_features`; it does not
+replace the separate log-mel or QNN/HTP gates.
+
+The log-mel gate requires the exact `[N, 80, 3000]` shape, finite values,
+cosine similarity at least `0.9999`, and mean absolute error at most `1e-3` on
+fixed full 30-second AliMeeting chunks. Maximum absolute error is recorded for
+diagnostics but is not a promotion blocker. The actual CPU frontend must also
+retain at least `0.995` cosine at the final audio embedding.
+
+Build the small frontend probe against the same patched MNN build, then pass it
+to the audio verifier to collect both frontend and graph evidence:
+
+```bash
+c++ -std=c++17 tools/moss_fbank_probe.cpp \
+  -I "$MNN_ROOT/tools/audio/include" -I "$MNN_ROOT/include" \
+  -L "$MNN_BUILD_DIR/tools/audio" -L "$MNN_BUILD_DIR/express" -L "$MNN_BUILD_DIR" \
+  -Wl,-rpath,"$MNN_BUILD_DIR/tools/audio:$MNN_BUILD_DIR/express:$MNN_BUILD_DIR" \
+  -lMNNAudio -lMNN_Express -lMNN -o "$MNN_BUILD_DIR/moss_fbank_probe"
+
+python3 tools/verify_moss_audio_mnn.py \
+  --model-dir "$MODEL_DIR" --mnn-dir "$EXPORTED_MODEL_DIR" --wav "$ALIGNMENT_WAV" \
+  --mnn-fbank-probe "$MNN_BUILD_DIR/moss_fbank_probe"
+```
+
 ## Repository Checks
 
 Run the checks that do not require model weights or QAIRT:

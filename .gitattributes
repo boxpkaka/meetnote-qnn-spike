@@ -1,2 +1,3 @@
 fixtures/calibration/* -text -diff
 fixtures/teacher/* -text -diff
+third_party/patches/**/*.patch whitespace=-trailing-space

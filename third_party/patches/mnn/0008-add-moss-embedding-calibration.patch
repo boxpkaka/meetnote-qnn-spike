@@ -1,0 +1,93 @@
+diff --git a/transformers/llm/export/llmexport.py b/transformers/llm/export/llmexport.py
+--- a/transformers/llm/export/llmexport.py
++++ b/transformers/llm/export/llmexport.py
+@@ -545,9 +545,14 @@ class LlmExporter(torch.nn.Module):
+             self.model.args.calib_data = self.args.calib_data
+ 
+             if os.path.exists(self.args.calib_data):
+-                with open(self.args.calib_data, 'r', encoding='utf-8') as f:
+-                    # 统计总行数
+-                    total_lines = sum(1 for _ in f)
++                if self.args.calib_data.endswith('.npz'):
++                    import numpy as np
++                    with np.load(self.args.calib_data) as archive:
++                        total_lines = int(archive['embeddings'].shape[0])
++                else:
++                    with open(self.args.calib_data, 'r', encoding='utf-8') as f:
++                        # 统计总行数
++                        total_lines = sum(1 for _ in f)
+             else:
+                 print(f"错误：找不到文件 {self.args.calib_data}")
+ 
+diff --git a/transformers/llm/export/utils/omni_quantizer.py b/transformers/llm/export/utils/omni_quantizer.py
+--- a/transformers/llm/export/utils/omni_quantizer.py
++++ b/transformers/llm/export/utils/omni_quantizer.py
+@@ -109,6 +109,7 @@ class OmniQuantizer:
+     def get_calib_dataset(data, tokenizer=None, n_samples=128, max_seq_len=512, split="train"):
+         custom_calib_data = False
+         raw_jsonl_data = False
++        precomputed_data = False
+         if isinstance(data, str):
+             from datasets import load_dataset
+             if data == "pileval":
+@@ -122,6 +123,20 @@ class OmniQuantizer:
+                     dataset = [json.loads(line) for line in f if line.strip()]
+                 if any(not isinstance(text, str) for text in dataset):
+                     raise ValueError("raw calibration JSONL must contain one JSON string per line")
++            elif data.endswith(".npz"):
++                import numpy as np
++                precomputed_data = True
++                with np.load(data) as archive:
++                    embeddings = archive["embeddings"]
++                    starts = archive["starts"]
++                if embeddings.ndim != 3 or embeddings.shape[1] != 64:
++                    raise ValueError("MOSS calibration embeddings must have shape [N,64,H]")
++                if starts.shape != (embeddings.shape[0],):
++                    raise ValueError("MOSS calibration starts must have shape [N]")
++                dataset = [
++                    (torch.from_numpy(window).unsqueeze(1), int(start))
++                    for window, start in zip(embeddings[:n_samples], starts[:n_samples])
++                ]
+             else:
+                 custom_calib_data = True
+                 with open(data, 'r', encoding='utf-8') as f:
+@@ -130,7 +145,9 @@ class OmniQuantizer:
+             raise NotImplementedError("Data loading error")
+ 
+         samples = []
+-        if not custom_calib_data and not raw_jsonl_data:
++        if precomputed_data:
++            samples.extend(dataset)
++        elif not custom_calib_data and not raw_jsonl_data:
+             dataset = dataset.shuffle(seed=42)
+             count = 0
+             idx = 0
+@@ -173,6 +190,18 @@ class OmniQuantizer:
+         return samples
+ 
+     def _get_first_input(self, sample):
++        if isinstance(sample, tuple):
++            inps, start = sample
++            seq_len = int(inps.shape[0])
++            inps = inps.to(self.best_device)
++            position_ids = torch.arange(
++                start, start + seq_len, device=self.best_device, dtype=torch.long
++            ).unsqueeze(0)
++            return {
++                "rotary_pos_emb": self.model.rotary(position_ids).to(self.best_device),
++                "attention_mask": self.model.get_attention_mask(seq_len, 0).to(self.best_device),
++                "position_ids": position_ids,
++            }, inps
+         sample = sample.long()
+         layer_kwargs = {}
+         seq_len = sample.numel()
+@@ -514,7 +543,8 @@ class OmniQuantizer:
+ 
+         for sample in self.samples:
+             # skip empty sample
+-            if sample.numel() == 0:
++            tensor = sample[0] if isinstance(sample, tuple) else sample
++            if tensor.numel() == 0:
+                 continue
+             kw, inp = self._get_first_input(sample)
+ 

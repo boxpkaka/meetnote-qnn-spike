@@ -1,0 +1,107 @@
+{
+  "format": "meetnote.moss_qnn_provenance.v1",
+  "release_id": "moss-transcribe-diarize-0.9b-sm8850-v81-poc-v1",
+  "status": "server-build-complete-device-validation-pending",
+  "production_ready": false,
+  "blockers": [
+    "SM8850 device load, numerical alignment, quality, RTF, and PSS validation have not run"
+  ],
+  "model": {
+    "id": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+    "revision": "e8681d68e7042738ffca8ac8212bc8fcb1131ab8",
+    "architecture": "Whisper-Medium + 4x temporal merge + VQAdaptor + Qwen3-0.6B",
+    "weight_sha256": "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4"
+  },
+  "mnn": {
+    "revision": "0bff03cbef43c783f44e41484b9f8a0b28bd758d",
+    "patches": [
+      "0001-fix-qnn-blockwise-int8-weight-encoding.patch",
+      "0002-add-qnn-partition-debug-controls.patch",
+      "0003-pin-sm8850-vtcm-budget.patch",
+      "0004-add-raw-jsonl-omni-calibration.patch",
+      "0005-add-moss-transcribe-diarize-export.patch",
+      "0006-add-moss-multichunk-audio-runtime.patch",
+      "0007-add-moss-native-runner.patch",
+      "0008-add-moss-embedding-calibration.patch",
+      "0009-fix-whisper-fbank-output-layout.patch",
+      "0010-configure-qnn-vtcm-and-hvx.patch"
+    ]
+  },
+  "target": {
+    "soc": "SM8850",
+    "soc_id": 87,
+    "dsp_arch": "v81",
+    "vtcm_mb": 8,
+    "hvx_threads": 8,
+    "qairt_version": "2.48.40.260702"
+  },
+  "graph": {
+    "audio_encoder_front": {"input": [1, 80, 3000], "output": [1, 1500, 1024], "precision": "fp16", "layers": "0-11"},
+    "audio_encoder_back": {"input": [1, 1500, 1024], "output": [1, 375, 1024], "precision": "fp16", "layers": "12-23+norm+merge+adaptor"},
+    "decoder": {"prefill_chunk": 64, "decode_chunk": 1, "precision": "w8a16", "kv_cache_tokens": 8192, "cpu_rope": true, "cpu_attention": true},
+    "logits_range_policy": "smallest power of two >= max(64, calibration_max_abs*1.1)"
+  },
+  "server_build_evidence": {
+    "audio_encoder_front": {
+      "bytes": 471111688,
+      "sha256": "56b44a1ffae1d1f1afd011df0cf519c20c5fb2f78eb7e3f9865d774a60bcc22c",
+      "context_compile_seconds": 1771.8545
+    },
+    "audio_encoder_back": {
+      "bytes": 470604488,
+      "sha256": "2cbc7be1c0bf4fbd371afa35548986094fe8e652756666c60adc77715ba27539",
+      "context_compile_seconds": 1789.7179
+    },
+    "mnn_cpu_audio_alignment": {
+      "scope": "HF FP32 to MNN CPU using identical official input_features",
+      "front_cosine": 0.9997790387,
+      "back_isolated_cosine": 0.9999871562,
+      "end_to_end_cosine": 0.9997396905,
+      "status": "valid"
+    },
+    "log_mel_alignment": {
+      "scope": "first full 30-second chunk of R8001_M8004_0000_300s.wav against official WhisperFeatureExtractor",
+      "source_wav_sha256": "123c057c80145117cf5efa3d2c985447fdbd48504e33f5ad6bc773e26844e8ff",
+      "shape": [1, 80, 3000],
+      "all_finite": true,
+      "cosine": 0.9999912521,
+      "mean_abs_error": 0.0007332928,
+      "max_abs_error": 0.039110899,
+      "policy": "shape exact, all finite, cosine >= 0.9999, mean_abs_error <= 0.001; max_abs_error diagnostic only",
+      "status": "valid"
+    },
+    "cpu_frontend_audio_alignment": {
+      "scope": "official HF FP32 audio embedding versus actual MNN whisper_fbank followed by MNN CPU front and back graphs",
+      "source_wav_sha256": "123c057c80145117cf5efa3d2c985447fdbd48504e33f5ad6bc773e26844e8ff",
+      "cosine": 0.9998101522,
+      "mean_abs_error": 0.0075305603,
+      "max_abs_error": 1.422044,
+      "minimum_cosine": 0.995,
+      "status": "valid"
+    },
+    "decoder": {
+      "status": "context-compile-valid",
+      "strategy": "CPU fused attention and RoPE; HTP W8A16 projection, FFN, and lm_head graphs",
+      "context_count": 31,
+      "context_bytes": 615530496,
+      "context_set_sha256": "3dd95cb76da0d0cf41605e8a7c48654121a14fb2aebf3f3f54443d2db1140810",
+      "wrapper_bytes": 257032,
+      "wrapper_sha256": "6e14dc8af6adefe08153f28120f4c04790be37087f73d1378e2a00fecea8c560",
+      "context_compile_seconds": 358.3304,
+      "note": "Full HTP attention remains infeasible because QAIRT requires 16 MiB for the 8192-token past-key InputSlicePad while SM8850 provides 8 MiB VTCM. Device execution is still unverified."
+    }
+  },
+  "runtime": {
+    "sample_rate": 16000,
+    "mel_bins": 80,
+    "chunk_seconds": 30,
+    "audio_tokens_per_second": 12.5,
+    "time_marker_seconds": 2,
+    "max_audio_seconds": 300,
+    "max_sequence_tokens": 8192,
+    "max_new_tokens": 4096,
+    "eos_token_id": 151645,
+    "sampling": "greedy",
+    "repetition_penalty": null
+  }
+}

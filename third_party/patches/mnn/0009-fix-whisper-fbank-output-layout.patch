@@ -1,0 +1,18 @@
+diff --git a/tools/audio/source/audio.cpp b/tools/audio/source/audio.cpp
+index 70c396a..fb25409 100644
+--- a/tools/audio/source/audio.cpp
++++ b/tools/audio/source/audio.cpp
+@@ -657,11 +657,8 @@ VARP whisper_fbank(VARP waveform, int sample_rate, int n_mels, int n_fft, int ho
+     auto log_specgram = _Log(_Maximum(mel_specgram, _Scalar<float>(1e-10f))) / _Log(_Scalar<float>(10.0));
+     log_specgram      = _Maximum(log_specgram, _ReduceMax(log_specgram) - _Scalar<float>(8.0));
+     log_specgram      = (log_specgram + _Scalar<float>(4.0)) / _Scalar<float>(4.0);
+-    // NHWC -> NCHW
+-    log_specgram = _Unsqueeze(log_specgram, {0, 1});
+-    log_specgram = _Convert(log_specgram, NCHW);
+-    log_specgram = _Squeeze(log_specgram, {2});
+-    return log_specgram;
++    // [frames, mels] -> [1, mels, frames]
++    return _Unsqueeze(_Transpose(log_specgram, {1, 0}), {0});
+ }
+ 
+ VARP usm_fbank(VARP waveform, int sample_rate, int n_mels, int n_fft, int hop_length, int frame_length, float mel_floor) {

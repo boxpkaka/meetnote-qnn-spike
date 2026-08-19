@@ -7,9 +7,11 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +29,7 @@ FORBIDDEN_SUFFIXES = {
     ".weight",
 }
 EXPECTED_MNN_REVISION = "0bff03cbef43c783f44e41484b9f8a0b28bd758d"
+EXPECTED_MOSS_REVISION = "e8681d68e7042738ffca8ac8212bc8fcb1131ab8"
 
 
 def run(command: list[str], cwd: Path = ROOT) -> str:
@@ -208,6 +211,28 @@ def validate_cpu_candidate_metadata() -> None:
             raise ValueError(f"CPU candidate {key} is not SHA-256")
 
 
+def validate_moss_metadata() -> None:
+    release = ROOT / "releases/moss-transcribe-diarize-0.9b-sm8850-v81-poc-v1"
+    source = json.loads((release / "source-manifest.json").read_text(encoding="utf-8"))
+    provenance = json.loads((release / "provenance.json").read_text(encoding="utf-8"))
+    validation = json.loads((release / "validation.json").read_text(encoding="utf-8"))
+    if source.get("format") != "meetnote.model_source_manifest.v1":
+        raise ValueError("unsupported MOSS source manifest format")
+    if source.get("model", {}).get("revision") != EXPECTED_MOSS_REVISION:
+        raise ValueError("MOSS source revision is not pinned")
+    if provenance.get("format") != "meetnote.moss_qnn_provenance.v1":
+        raise ValueError("unsupported MOSS provenance format")
+    if provenance.get("model", {}).get("revision") != EXPECTED_MOSS_REVISION:
+        raise ValueError("MOSS provenance revision differs from the source manifest")
+    if provenance.get("production_ready") is not False:
+        raise ValueError("unvalidated MOSS PoC must not be production-ready")
+    patches = provenance.get("mnn", {}).get("patches", [])
+    if not all(f"00{index}-" in " ".join(patches) for index in range(5, 11)):
+        raise ValueError("MOSS patch series is incomplete in provenance")
+    if validation.get("production_ready") is not False or validation.get("status") != "not-run":
+        raise ValueError("MOSS validation must remain pending until device evidence exists")
+
+
 def validate_source_syntax(files: list[Path]) -> None:
     for path in files:
         if path.suffix == ".py":
@@ -229,36 +254,30 @@ def validate_mnn_patches(mnn_root: Path, expected_state: str) -> None:
     patches = sorted((ROOT / "third_party/patches/mnn").glob("*.patch"))
     if not patches:
         raise ValueError("no MNN patches found")
-    command = ["git", "apply", "--unidiff-zero"]
-    if expected_state == "applied":
-        command.append("--reverse")
-    command.extend(["--check", *(str(path) for path in patches)])
-    if expected_state == "either":
-        forward = subprocess.run(
-            ["git", "apply", "--unidiff-zero", "--check", *(str(path) for path in patches)],
-            cwd=mnn_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        reverse = subprocess.run(
-            [
-                "git",
-                "apply",
-                "--unidiff-zero",
-                "--reverse",
-                "--check",
-                *(str(path) for path in patches),
-            ],
-            cwd=mnn_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if forward.returncode and reverse.returncode:
-            raise ValueError("MNN patches are neither cleanly applicable nor fully applied")
-    else:
-        run(command, cwd=mnn_root)
+
+    def check_series(state: str) -> bool:
+        with tempfile.TemporaryDirectory(prefix="meetnote-mnn-index-") as temporary:
+            environment = os.environ | {"GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            subprocess.run(
+                ["git", "read-tree", "HEAD"], cwd=mnn_root, env=environment, check=True
+            )
+            if state == "applied":
+                subprocess.run(
+                    ["git", "add", "-A"], cwd=mnn_root, env=environment, check=True
+                )
+            ordered = patches if state == "applicable" else list(reversed(patches))
+            for patch in ordered:
+                command = ["git", "apply", "--cached", "--unidiff-zero"]
+                if state == "applied":
+                    command.append("--reverse")
+                command.append(str(patch))
+                if subprocess.run(command, cwd=mnn_root, env=environment).returncode:
+                    return False
+            return True
+
+    states = ("applicable", "applied") if expected_state == "either" else (expected_state,)
+    if not any(check_series(state) for state in states):
+        raise ValueError(f"MNN patch series is not {expected_state}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -284,6 +303,7 @@ def main() -> None:
     validate_fixtures()
     validate_release_metadata()
     validate_cpu_candidate_metadata()
+    validate_moss_metadata()
     validate_source_syntax(files)
     empty_tree = run(["git", "hash-object", "-t", "tree", "/dev/null"]).strip()
     run(["git", "diff", "--check", empty_tree, "HEAD", "--"])

@@ -1,0 +1,12 @@
+{
+  "format": "meetnote.moss_qnn_validation_pending.v1",
+  "release_id": "moss-transcribe-diarize-0.9b-sm8850-v81-poc-v1",
+  "status": "not-run",
+  "production_ready": false,
+  "required_evidence": [
+    "component_alignment",
+    "alimeeting_validation_10x300s",
+    "sm8850_device_gate"
+  ],
+  "note": "The CPU-attention/HTP-linear decoder contexts compile for SM8850, but device loading, inference, quality, RTF, and PSS have not been measured. Replace this pending record only with evidence accepted by tools/verify_moss_validation.py."
+}
