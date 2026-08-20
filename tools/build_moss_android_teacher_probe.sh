@@ -22,6 +22,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$CXX" -std=c++17 -O2 -fPIE -pie \
   "$SCRIPT_DIR/mnn_teacher_forced_logits.cpp" \
   -I "$MNN_ROOT/transformers/llm/engine/include" -I "$MNN_ROOT/include" \
-  -L "$RELEASE_DIR/lib" -Wl,-rpath,'$ORIGIN/lib' \
+  -L "$RELEASE_DIR/lib" -Wl,-rpath,"\$ORIGIN/lib" \
   -lllm -lMNNAudio -lMNN_Express -lMNN -o "$OUTPUT"
 file "$OUTPUT"

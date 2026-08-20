@@ -108,7 +108,9 @@ def main() -> None:
             {"type": "audio", "audio": str(args.audio)},
             {"type": "text", "text": user_prompt},
         ]}]
-        rendered = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        rendered = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
         audio, sample_rate = sf.read(args.audio, dtype="float32", always_2d=True)
         if sample_rate != 16_000 or audio.shape[1] != 1:
             raise ValueError("audio must be 16 kHz mono")
