@@ -1,12 +1,262 @@
 {
-  "format": "meetnote.moss_qnn_validation_pending.v1",
+  "format": "meetnote.moss_qnn_validation_failed.v1",
   "release_id": "moss-transcribe-diarize-0.9b-sm8850-v81-poc-v1",
-  "status": "not-run",
+  "status": "failed",
   "production_ready": false,
-  "required_evidence": [
-    "component_alignment",
-    "alimeeting_validation_10x300s",
-    "sm8850_device_gate"
+  "device": {
+    "model": "V2505A",
+    "soc": "SM8850",
+    "android": 16
+  },
+  "observed": {
+    "corrected_contract_v2_30s": {
+      "process_status": "ok",
+      "prompt_alignment": "valid",
+      "prompt_tokens": 472,
+      "quality_status": "valid_overlapping_speakers",
+      "boundary_regression": null,
+      "total_ms": 19596.7,
+      "rtf": 0.653223,
+      "peak_pss_bytes": 536551424
+    },
+    "teacher_forced_30s": {
+      "token_ids": "identical",
+      "steps": 48,
+      "top1_agreement": 0.9375,
+      "logits_cosine_mean": 0.9558259781,
+      "logits_cosine_min": 0.6853909734,
+      "first_top1_mismatch_step": 3,
+      "saturation": false
+    },
+    "qnn_htp_audio_4x30s": {
+      "status": "valid",
+      "minimum_front_cosine": 0.9998712781,
+      "minimum_end_to_end_cosine": 0.9999171993,
+      "required_cosine": 0.995
+    },
+    "android_full_cpu_mislabeled_as_strict_fp16_graph30_cpu_diagnostic": {
+      "token_ids": "identical",
+      "steps": 48,
+      "top1_agreement": 0.9791666667,
+      "logits_cosine_mean": 0.9957897571,
+      "logits_cosine_min": 0.9740539197,
+      "first_top1_mismatch_step": 3,
+      "wrapper_sha256": "984e846e",
+      "status": "invalid_as_qnn_evidence_full_cpu_wrapper_was_deployed"
+    },
+    "android_full_cpu_180_step_diagnostic": {
+      "token_ids": "identical",
+      "steps": 180,
+      "top1_agreement": 0.9833333333,
+      "logits_cosine_mean": 0.9958542326,
+      "logits_cosine_min": 0.9498007131,
+      "top1_mismatch_count": 3,
+      "wrapper_sha256": "984e846e",
+      "status": "invalid_as_qnn_evidence_full_cpu_wrapper_was_deployed"
+    },
+    "decoder_strict_fp16_layer27_and_output_cpu_diagnostic": {
+      "qnn_plugin_wrapper_sha256": "5a69c2e3306c394258475eab365c13753226110a8f2d4a33291850eb936e2e7a",
+      "status": "invalid_partition_no_logits_at_step_0"
+    },
+    "w4a16_cpu_against_w8_cpu_180_steps": {
+      "steps": 180,
+      "top1_agreement": 0.9166666667,
+      "logits_cosine_mean": 0.9446750039,
+      "logits_cosine_min": 0.6082801575,
+      "first_top1_mismatch_step": 5,
+      "status": "rejected_before_device_due_to_cpu_quality_regression"
+    },
+    "w16a16_cpu_against_w8_cpu_180_steps": {
+      "steps": 180,
+      "top1_agreement": 0.9944444444,
+      "logits_cosine_mean": 0.997283598,
+      "logits_cosine_min": 0.9773523914,
+      "first_top1_mismatch_step": 132,
+      "status": "promoted_to_qnn_device_alignment_test"
+    },
+    "w16a16_device": {
+      "runtime_precision": "normal",
+      "weight_sha256": "7d4c35add71427d6963bf0fb2b2f11ff9875f58530291107582bdb3b485b3f85",
+      "artifact_manifest_sha256": "12831c6fd9bc687b2db20a82f9fdad1c835f5f711de207598766e26ccc7d6b1c",
+      "android_cpu_vs_qnn_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9999983288,
+        "logits_cosine_min": 0.9999632962,
+        "first_top1_mismatch": null
+      },
+      "w8_server_cpu_vs_w16_qnn_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9973072328,
+        "logits_cosine_min": 0.9768530279,
+        "first_top1_mismatch": null
+      },
+      "regression_30_60_90_120": {
+        "statuses": [
+          "ok",
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "segment_counts": [
+          4,
+          10,
+          15,
+          19
+        ],
+        "rtf": [
+          0.553181,
+          0.416983,
+          0.514228,
+          0.52305
+        ]
+      },
+      "regression_300": {
+        "status": "ok",
+        "segments": 54,
+        "speakers": 4,
+        "last_timestamp": 299.92,
+        "rtf": 0.950522,
+        "peak_pss_bytes": 2661988352,
+        "result_sha256": "61ac1544f14052039864fde07156e44004140cd6569c43b4cb2c43825ec5fb2e",
+        "semantic_audit": "pass_with_recorded_differences",
+        "semantic_audit_sha256": "0c3f3a467e301ab1cecc25557cb466e08d397892a55fa4169f858ec5ac4a21ca"
+      },
+      "hf_fp32_reference_300": {
+        "segments": 56,
+        "speakers": 4,
+        "last_timestamp": 299.99,
+        "result_sha256": "441f8f24ee86e6c1795ddd783ae09ea2f92eca223e5e2213977bdfed969b72e8"
+      },
+      "status": "selected_correctness_candidate_single_300s_pass"
+    },
+    "clean_rebuild_20260820": {
+      "status": "failed_numerical_reproducibility_gate",
+      "artifact_manifest_sha256": "d4bfb50f83d0027f11a5c62bff461dc0e861318ec7e93d46cd45efcd23d815b0",
+      "payload_file_count": 55,
+      "retained_qnn_vs_clean_qnn_180_steps": {
+        "top1_agreement": 0.9833333333,
+        "logits_cosine_mean": 0.9999137952,
+        "logits_cosine_min": 0.9977353601,
+        "first_top1_mismatch_step": 3
+      }
+    },
+    "alimeeting_10x300_20260820": {
+      "status": "failed_quality_gate",
+      "runtime_successful_cases": 8,
+      "runtime_error_cases": 2,
+      "dsp_ssr_oom_crash_or_non_finite": false,
+      "max_rtf": 4.19752,
+      "max_peak_pss_bytes": 3699527680,
+      "hf_cer": 0.2150424316,
+      "qnn_cer": 0.3151589106,
+      "cer_regression": 0.100116479,
+      "hf_cpcer": 0.1830939043,
+      "qnn_cpcer": 0.2916412447,
+      "cpcer_regression": 0.1085473404,
+      "timestamp_boundary_mae_regression_seconds": 1.0175830967,
+      "failures": [
+        "R8007_M8010_0000 exhausted 4096 generated tokens at 264.88 seconds; HF requires 4897 generated and 8893 total tokens",
+        "R8009_M8019_0000 generated speaker text without timestamps and failed the strict transcript schema; a cooled standalone rerun reproduced the same 1530-token output at RTF 0.64424",
+        "R8001_M8004_0300 degraded to repeated confirmation tokens near the end"
+      ],
+      "semantic_audit": "failed_with_recorded_case_level_findings"
+    },
+    "history10240_runner_fix_20260820": {
+      "context_max_tokens": 10240,
+      "max_new_tokens": 6144,
+      "artifact_manifest_sha256": "ac3332a38a9e26e83b3fd66650df98edb779ad84ef0e88b9ff9d993646b7a7eb",
+      "runner_sha256": "778a165e5c348a94a6f8c35d68a945243605fcc3fdb984a3325aa54cadc8e896",
+      "root_cause": "runner token limits must be loaded from config while preserving explicit set_config and four-argument multimodal response calls",
+      "runner_v9_8192_control_30s": {
+        "status": "ok",
+        "prompt_tokens": 472,
+        "generated_tokens": 147
+      },
+      "runner_v9_10240_30s": {
+        "status": "ok",
+        "prompt_tokens": 472,
+        "generated_tokens": 147
+      },
+      "case5_300s": {
+        "status": "incomplete_connection_lost",
+        "result_present": false
+      },
+      "status": "runner_blocker_fixed_long_output_not_validated"
+    },
+    "w8_pure_fp16_qnn_candidate": {
+      "wrapper_sha256": "6e14dc8af6adefe08153f28120f4c04790be37087f73d1378e2a00fecea8c560",
+      "weight_sha256": "efc0132088e59d80b20f77b0fc3f53aade02a6a08fc6bd9bb3ea11e7a6d3b4ee",
+      "server_cpu_before_after_strip_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 1,
+        "logits_cosine_min": 1
+      },
+      "android_normal_cpu_vs_qnn_180_steps": {
+        "top1_agreement": 0.9944444444,
+        "logits_cosine_mean": 0.9974315246,
+        "logits_cosine_min": 0.9664272131,
+        "first_top1_mismatch_step": 3
+      },
+      "server_cpu_vs_qnn_48_steps_low_precision_diagnostic": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9976446008,
+        "logits_cosine_min": 0.9758628428
+      },
+      "android_normal_cpu_vs_qnn_48_steps": {
+        "top1_agreement": 0.9791666667,
+        "mismatch_count": 1,
+        "first_top1_mismatch_step": 3
+      },
+      "status": "backup_candidate_48_step_gate_failed"
+    },
+    "corrected_contract_normal_precision_regression": {
+      "durations_seconds": [
+        30,
+        60,
+        90,
+        120
+      ],
+      "process_status": [
+        "ok",
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "segment_counts": [
+        4,
+        10,
+        15,
+        19
+      ],
+      "rtf": [
+        0.467863,
+        0.423629,
+        0.422819,
+        0.472396
+      ],
+      "semantic_audit": "pass_with_recorded_minor_differences",
+      "status": "valid",
+      "artifact_manifest_sha256": "73c245d9c24cba146ed21639c2a56957ed812aefefe8152fed8689c16440deb0",
+      "payload_file_count": 55,
+      "prompt_alignment": [
+        "valid",
+        "valid",
+        "valid",
+        "valid"
+      ],
+      "peak_pss_bytes": [
+        546489344,
+        576571392,
+        838252544,
+        1081573376
+      ]
+    }
+  },
+  "remaining_evidence": [
+    "10240_context_complete_cold_device_validation_for_R8007_M8010_0000",
+    "cold_reproduction_and_first_format_token_alignment_for_R8009_M8019_0000",
+    "clean_build_numerical_reproducibility",
+    "balanced_dcvs_10x300_rerun_after_correctness_fixes"
   ],
-  "note": "The CPU-attention/HTP-linear decoder contexts compile for SM8850, but device loading, inference, quality, RTF, and PSS have not been measured. Replace this pending record only with evidence accepted by tools/verify_moss_validation.py."
+  "note": "The retained W16A16 candidate passes the short and single-300-second gates, but the 2026-08-20 full gate failed. The dynamic token-limit runner fix passes 30-second device smoke for both 8192 and 10240 contexts, but the required 10240 case-5 long run lost connectivity before producing a result. A clean rebuild is not numerically reproducible against the retained QNN candidate (98.33% top-1 over 180 steps), and AliMeeting 10x300 has structured failures plus CER/cpCER and timestamp regressions above policy. Burst is already the maximum-performance profile and caused sustained thermal throttling; production_ready remains false."
 }

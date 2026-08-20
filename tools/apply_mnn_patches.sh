@@ -25,14 +25,46 @@ if (( ${#patches[@]} == 0 )); then
   exit 1
 fi
 
-for patch in "${patches[@]}"; do
-  if git -C "$MNN_ROOT" apply --unidiff-zero --reverse --check "$patch" >/dev/null 2>&1; then
-    echo "[SKIP] $(basename "$patch") already applied"
-  elif git -C "$MNN_ROOT" apply --unidiff-zero --check "$patch"; then
-    git -C "$MNN_ROOT" apply --unidiff-zero "$patch"
-    echo "[OK] applied $(basename "$patch")"
-  else
-    echo "[ERROR] cannot apply $(basename "$patch"); inspect the MNN working tree"
-    exit 1
+series_has_state() {
+  local state="$1"
+  local temporary_index
+  temporary_index="$(mktemp)"
+  rm -f "$temporary_index"
+  trap 'rm -f "$temporary_index"' RETURN
+
+  GIT_INDEX_FILE="$temporary_index" git -C "$MNN_ROOT" read-tree HEAD
+  if [[ "$state" == applied ]]; then
+    GIT_INDEX_FILE="$temporary_index" git -C "$MNN_ROOT" add -A
   fi
+
+  local ordered=("${patches[@]}")
+  if [[ "$state" == applied ]]; then
+    ordered=()
+    local index
+    for ((index=${#patches[@]} - 1; index >= 0; index--)); do
+      ordered+=("${patches[index]}")
+    done
+  fi
+
+  local patch command=(git -C "$MNN_ROOT" apply --cached --unidiff-zero)
+  [[ "$state" == applied ]] && command+=(--reverse)
+  for patch in "${ordered[@]}"; do
+    if ! GIT_INDEX_FILE="$temporary_index" "${command[@]}" "$patch" >/dev/null 2>&1; then
+      return 1
+    fi
+  done
+}
+
+if series_has_state applied; then
+  echo "[SKIP] complete MNN patch series already applied"
+  exit 0
+fi
+if ! series_has_state applicable; then
+  echo "[ERROR] MNN patch series is neither fully applicable nor fully applied"
+  exit 1
+fi
+
+for patch in "${patches[@]}"; do
+  git -C "$MNN_ROOT" apply --unidiff-zero "$patch"
+  echo "[OK] applied $(basename "$patch")"
 done

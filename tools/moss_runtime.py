@@ -27,11 +27,19 @@ WHISPER_ENCODER_STRIDE = 2
 AUDIO_MERGE_SIZE = 4
 AUDIO_SAMPLE_STRIDE = 160 * WHISPER_ENCODER_STRIDE * AUDIO_MERGE_SIZE
 AUDIO_TOKENS_PER_SECOND = 12.5
-TIME_MARKER_SECONDS = 2
+TIME_MARKER_SECONDS = 5
 PREFILL_CHUNK = 64
 MAX_SEQUENCE_TOKENS = 8_192
 MAX_NEW_TOKENS = 4_096
 EOS_TOKEN_ID = 151_645
+MOSS_AUDIO_CONTRACT = {
+    "audio_pad": 151_671,
+    "audio_start": 151_669,
+    "audio_end": 151_670,
+    "audio_merge_size": AUDIO_MERGE_SIZE,
+    "audio_tokens_per_second": AUDIO_TOKENS_PER_SECOND,
+    "time_marker_every_seconds": TIME_MARKER_SECONDS,
+}
 DEFAULT_PROMPT = (
     "请将音频转写为文本，每一段需以起始时间戳和说话人编号"
     "（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，"

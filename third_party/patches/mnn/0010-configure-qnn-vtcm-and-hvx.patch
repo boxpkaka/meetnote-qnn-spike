@@ -2,31 +2,35 @@ diff --git a/source/backend/qnn/npu_convert.py b/source/backend/qnn/npu_convert.
 index dbb64877..a249273 100644
 --- a/source/backend/qnn/npu_convert.py
 +++ b/source/backend/qnn/npu_convert.py
-@@ -23,6 +23,10 @@ cache_dir = 'res'
+@@ -23,6 +23,13 @@ cache_dir = 'res'
  if 'cache' in post_treat:
      cache_dir = post_treat['cache']
  clean_tmp = True
-+vtcm_mb = int(os.environ.get("MNN_QNN_VTCM_MB", "4"))
++vtcm_mb = int(os.environ.get("MNN_QNN_VTCM_MB", "8"))
 +hvx_threads = int(os.environ.get("MNN_QNN_HVX_THREADS", "4"))
 +merge_workers_limit = int(os.environ.get("MNN_QNN_MERGE_WORKERS", "0"))
-+print('vtcm_mb:', vtcm_mb, "; hvx_threads:", hvx_threads, "; merge_workers_limit:", merge_workers_limit)
++fp16_relaxed_precision = int(os.environ.get("MNN_QNN_FP16_RELAXED_PRECISION", "1"))
++print('vtcm_mb:', vtcm_mb, "; hvx_threads:", hvx_threads,
++      "; merge_workers_limit:", merge_workers_limit,
++      "; fp16_relaxed_precision:", fp16_relaxed_precision)
  
  
  def raise_stack_limit():
-@@ -110,10 +114,10 @@ htp_so = os.path.join(qnn_sdk, 'lib','x86_64-linux-clang','libQnnHtp.so')
+@@ -110,10 +117,10 @@ htp_so = os.path.join(qnn_sdk, 'lib','x86_64-linux-clang','libQnnHtp.so')
  htp_backend_extensions = {
      "graphs": [
          {
 -            "vtcm_mb": 4,
 +            "vtcm_mb": vtcm_mb,
              "O": 3.0,
-             "fp16_relaxed_precision": 1,
+-            "fp16_relaxed_precision": 1,
++            "fp16_relaxed_precision": fp16_relaxed_precision,
 -            "hvx_threads": 4
 +            "hvx_threads": hvx_threads
          }
      ],
      "devices": [
-@@ -133,6 +137,8 @@ def process_merge(key, merge_index):
+@@ -133,6 +140,8 @@ def process_merge(key, merge_index):
      workdirs = [None] * len(srcs)
  
      src_workers = max(1, min(os.cpu_count()//2 or 1, len(srcs)))
@@ -35,7 +39,7 @@ index dbb64877..a249273 100644
      with concurrent.futures.ProcessPoolExecutor(
          max_workers=src_workers,
          mp_context=multiprocessing.get_context("fork"),
-@@ -194,4 +200,6 @@ def process_merge(key, merge_index):
+@@ -194,4 +203,6 @@ def process_merge(key, merge_index):
  merge_keys = list(post_treat["merge"])
  raise_stack_limit()
  merge_workers = max(1, min(os.cpu_count()//2 or 1, len(merge_keys)))

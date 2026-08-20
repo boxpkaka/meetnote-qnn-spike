@@ -1,0 +1,63 @@
+diff --git a/transformers/llm/engine/src/omni.cpp b/transformers/llm/engine/src/omni.cpp
+index 5adba3f9..472de604 100644
+--- a/transformers/llm/engine/src/omni.cpp
++++ b/transformers/llm/engine/src/omni.cpp
+@@ -11,6 +11,8 @@
+ #endif
+ #include <regex>
+ #include <algorithm>
++#include <cstdlib>
++#include <fstream>
+ #include <random>
+ #include <MNN/AutoTime.hpp>
+ #include <MNN/expr/ExecutorScope.hpp>
+@@ -56,4 +58,20 @@ static std::vector<int> buildOmniAudioWindowBoundaries(int seqlen, int n_window)
+     }
+     return boundaries;
+ }
++
++static bool dumpMossAudioTensor(const char* prefix, int chunkIndex, const char* stage, VARP tensor) {
++    if (prefix == nullptr || prefix[0] == '\0') {
++        return true;
++    }
++    auto info = tensor == nullptr ? nullptr : tensor->getInfo();
++    auto values = tensor == nullptr ? nullptr : tensor->readMap<float>();
++    if (info == nullptr || values == nullptr) {
++        return false;
++    }
++    std::string path = std::string(prefix) + "-chunk" + std::to_string(chunkIndex) +
++        "-" + stage + ".f32";
++    std::ofstream output(path, std::ios::binary);
++    output.write(reinterpret_cast<const char*>(values), info->size * sizeof(float));
++    return output.good();
++}
+ #endif
+@@ -914,7 +932,9 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+             return std::vector<int>(0);
+         }
+         std::vector<VARP> chunkEmbeddings;
++        const char* dumpPrefix = std::getenv("MOSS_AUDIO_DUMP_PREFIX");
+         for (int start = 0; start < samples; start += chunkSamples) {
++            int chunkIndex = start / chunkSamples;
+             int validSamples = std::min(chunkSamples, samples - start);
+             auto chunk = _Slice(
+                 waveform, _var<int>({start}, {1}), _var<int>({validSamples}, {1}));
+@@ -932,10 +952,18 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+             Timer frontTimer;
+             auto front = mAudioFrontModule->forward(features);
+             front->readMap<float>();
++            if (!dumpMossAudioTensor(dumpPrefix, chunkIndex, "front", front)) {
++                MNN_ERROR("MOSS failed to dump audio front tensor\n");
++                return std::vector<int>(0);
++            }
+             mContext->audio_front_us += frontTimer.durationInUs();
+             Timer backTimer;
+             auto back = mAudioBackModule->forward(front);
+             back->readMap<float>();
++            if (!dumpMossAudioTensor(dumpPrefix, chunkIndex, "back", back)) {
++                MNN_ERROR("MOSS failed to dump audio back tensor\n");
++                return std::vector<int>(0);
++            }
+             mContext->audio_back_us += backTimer.durationInUs();
+             int validTokens = UP_DIV(validSamples, sampleStride);
+             back = _Slice(

@@ -132,13 +132,19 @@ tools (set `LD_LIBRARY_PATH` when it is not installed system-wide).
 calibration manifest.
 
 The runner accepts `config.json input.wav [hotwords]` and emits raw text,
-parsed segments, stage timings, RTF, and peak PSS as JSON. The checked-in
+parsed segments, prompt token evidence, stage timings, RTF, and peak PSS as JSON. The checked-in
 release record remains explicitly non-production-ready until
 `tools/verify_moss_validation.py` accepts component, AliMeeting, and SM8850
 device evidence. QAIRT 2.48.40 identifies SM8850 as SoC model `87`, Hexagon
 `v81`, with 8 MiB VTCM and 8 HVX threads; the rebuild pins those values
 explicitly. Full HTP attention needs 16 MiB for its 8192-token key slice, so
 the runnable candidate keeps fused attention on CPU instead.
+
+The first SM8850 device run and its remaining long-sequence quality blocker are
+recorded in [`docs/moss-sm8850-device-retrospective-20260819.md`](docs/moss-sm8850-device-retrospective-20260819.md).
+Resume device work from
+[`docs/moss-sm8850-device-todo.md`](docs/moss-sm8850-device-todo.md); the full promotion worklist is
+[`docs/moss-transcribe-diarize-todo.md`](docs/moss-transcribe-diarize-todo.md).
 
 After the build, run the external payload on an attached SM8850 device with:
 
@@ -166,10 +172,42 @@ c++ -std=c++17 tools/moss_fbank_probe.cpp \
   -Wl,-rpath,"$MNN_BUILD_DIR/tools/audio:$MNN_BUILD_DIR/express:$MNN_BUILD_DIR" \
   -lMNNAudio -lMNN_Express -lMNN -o "$MNN_BUILD_DIR/moss_fbank_probe"
 
+MNN_ROOT="$MNN_ROOT" MNN_BUILD_DIR="$MNN_BUILD_DIR" \
+  OUTPUT="$MNN_BUILD_DIR/moss_mnn_graph_probe" \
+  tools/build_moss_mnn_graph_probe.sh
+
 python3 tools/verify_moss_audio_mnn.py \
   --model-dir "$MODEL_DIR" --mnn-dir "$EXPORTED_MODEL_DIR" --wav "$ALIGNMENT_WAV" \
-  --mnn-fbank-probe "$MNN_BUILD_DIR/moss_fbank_probe"
+  --mnn-fbank-probe "$MNN_BUILD_DIR/moss_fbank_probe" \
+  --mnn-graph-probe "$MNN_BUILD_DIR/moss_mnn_graph_probe"
 ```
+
+For inputs longer than 30 seconds the verifier checks every 30-second chunk independently and the
+concatenated embedding, so a passing first chunk cannot mask later frontend drift.
+
+`tools/hf_teacher_forced_logits.py` also accepts `--audio` and `--reference-result-json` for MOSS.
+Build `tools/mnn_teacher_forced_logits.cpp` with `tools/build_mnn_teacher_forced_logits.sh`; its final
+optional `moss-wav` argument switches the MNN probe to the multimodal prompt path and reads the
+reference file as whitespace-separated token IDs. Always run `compare_token_ids.py` before comparing
+the resulting full-vocabulary logits with `compare_teacher_forced_logits.mjs`.
+Build the ARM64 diagnostic with `tools/build_moss_android_teacher_probe.sh`, then use
+`tools/run_moss_teacher_forced_sm8850.sh` after the normal device regression. It preserves the QNN
+logits, checks token IDs, and writes the MNN CPU versus QNN comparison into a new evidence directory.
+
+`tools/verify_moss_audio_token_contract.py` rejects drift between the pinned HF processor and
+`llm_config.json`, including audio start/end IDs and the five-second time-marker interval. Full-prompt
+reports must also match pinned independent HF token-count and token-ID SHA references, preventing a
+shared broken MNN chat template from passing circular comparison.
+`tools/prepare_moss_regression_inputs.py` creates SHA-pinned 30/60/90/120-second prefixes from one
+acceptance WAV for boundary regression.
+
+Build `tools/moss_tokenizer_probe.cpp` with `tools/build_moss_tokenizer_probe.sh` against the same
+patched MNN checkout to compare complete official/runtime prompt IDs before device execution. Set
+`MOSS_EVIDENCE_DIR` when invoking `tools/run_moss_sm8850.sh` to preserve the run log, result JSON,
+device properties, and SHA-256 records even when the native runner fails. Set
+The rebuild embeds 30/60/90/120-second reports under `prompt-contract/`; the device script selects one
+automatically by WAV sample count, fails on a prompt-ID mismatch, and saves `prompt-alignment.json`.
+`MOSS_PROMPT_CONTRACT` can still override the selected report.
 
 ## Repository Checks
 

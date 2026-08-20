@@ -227,10 +227,20 @@ def validate_moss_metadata() -> None:
     if provenance.get("production_ready") is not False:
         raise ValueError("unvalidated MOSS PoC must not be production-ready")
     patches = provenance.get("mnn", {}).get("patches", [])
-    if not all(f"00{index}-" in " ".join(patches) for index in range(5, 11)):
+    if not all(f"00{index}-" in " ".join(patches) for index in range(5, 14)):
         raise ValueError("MOSS patch series is incomplete in provenance")
-    if validation.get("production_ready") is not False or validation.get("status") != "not-run":
-        raise ValueError("MOSS validation must remain pending until device evidence exists")
+    if validation.get("production_ready") is not False:
+        raise ValueError("MOSS PoC must remain non-production-ready")
+    status = validation.get("status")
+    if status not in {"not-run", "failed"}:
+        raise ValueError("MOSS validation must remain pending or record failed device evidence")
+    if status == "failed":
+        if validation.get("format") != "meetnote.moss_qnn_validation_failed.v1":
+            raise ValueError("failed MOSS validation uses an unsupported format")
+        if not validation.get("device", {}).get("soc") == "SM8850":
+            raise ValueError("failed MOSS validation does not identify the target device")
+        if not validation.get("observed"):
+            raise ValueError("failed MOSS validation has no observed evidence")
 
 
 def validate_source_syntax(files: list[Path]) -> None:

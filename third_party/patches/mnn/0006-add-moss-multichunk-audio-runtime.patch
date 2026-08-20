@@ -96,18 +96,20 @@ index 5adba3f..5dd44b4 100644
          int seqlen = UP_DIV(input_features->getInfo()->dim[2], 2);
          constexpr int n_window = 100;
          std::vector<int> cu_seqlens = buildOmniAudioWindowBoundaries(seqlen, n_window);
-@@ -925,7 +977,28 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
+@@ -925,7 +977,30 @@ std::vector<int> Omni::audioProcess(MNN::Express::VARP waveform) {
      }
      int embed_len = audio_embedding->getInfo()->dim[0];
      addPositionIds(embed_len);
 -    std::vector<int> audio_ids(embed_len, mAudioPad);
 +    std::vector<int> audio_ids;
 +    if (audio_type == "moss_transcribe_diarize") {
-+        constexpr int tokensPerMarker = 25;
++        int markerSeconds = mConfig->config_.value("time_marker_every_seconds", 5);
++        float tokensPerSecond = mConfig->config_.value("audio_tokens_per_second", 12.5f);
++        int tokensPerMarker = static_cast<int>(tokensPerSecond * markerSeconds);
 +        int consumed = 0;
-+        int duration = static_cast<int>(embed_len / 12.5f);
-+        for (int second = 2; second <= duration; second += 2) {
-+            int position = (second / 2) * tokensPerMarker;
++        int duration = static_cast<int>(embed_len / tokensPerSecond);
++        for (int second = markerSeconds; second <= duration; second += markerSeconds) {
++            int position = (second / markerSeconds) * tokensPerMarker;
 +            audio_ids.insert(audio_ids.end(), position - consumed, mAudioPad);
 +            consumed = position;
 +            for (char digit : std::to_string(second)) {
@@ -126,7 +128,7 @@ index 5adba3f..5dd44b4 100644
      if (mAudioStart >= 0) {
          audio_ids.insert(audio_ids.begin(), mAudioStart);
      }
-@@ -1126,7 +1199,7 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
+@@ -1126,7 +1201,7 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
      std::vector<VARP> embeddings;
      std::vector<VARP> deepstacks;
      std::vector<int> position_ids;
@@ -135,7 +137,7 @@ index 5adba3f..5dd44b4 100644
      std::vector<int> cur_txt_ids;
      bool inVision = false, inAudio = false;
      bool hasDeepStack = !mDeepStackEmbeddings.empty();
-@@ -1142,6 +1215,35 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
+@@ -1142,6 +1217,35 @@ VARP Omni::embedding(const std::vector<int>& input_ids) {
      };
      for (int i = 0; i < input_ids.size(); i++) {
          int id = input_ids[i];

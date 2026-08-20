@@ -1,10 +1,13 @@
 {
   "format": "meetnote.moss_qnn_provenance.v1",
   "release_id": "moss-transcribe-diarize-0.9b-sm8850-v81-poc-v1",
-  "status": "server-build-complete-device-validation-pending",
+  "status": "w16-device-candidate-full-gate-failed",
   "production_ready": false,
   "blockers": [
-    "SM8850 device load, numerical alignment, quality, RTF, and PSS validation have not run"
+    "clean rebuild changes greedy top-1 at 3 of 180 teacher-forced steps versus the retained candidate",
+    "AliMeeting 10x300 has two structured failures and exceeds CER, cpCER, and timestamp regression gates",
+    "the 10240-token runner fix passes short device smoke, but the required 8893-token case-5 completion run has no final result after connectivity loss",
+    "burst mode thermally throttles during consecutive 300-second runs"
   ],
   "model": {
     "id": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
@@ -24,7 +27,12 @@
       "0007-add-moss-native-runner.patch",
       "0008-add-moss-embedding-calibration.patch",
       "0009-fix-whisper-fbank-output-layout.patch",
-      "0010-configure-qnn-vtcm-and-hvx.patch"
+      "0010-configure-qnn-vtcm-and-hvx.patch",
+      "0011-fix-moss-android-runtime.patch",
+      "0012-add-moss-prompt-token-evidence.patch",
+      "0013-export-standalone-chat-template.patch",
+      "0014-add-moss-audio-tensor-dump.patch",
+      "0015-use-configured-moss-token-limits.patch"
     ]
   },
   "target": {
@@ -36,9 +44,42 @@
     "qairt_version": "2.48.40.260702"
   },
   "graph": {
-    "audio_encoder_front": {"input": [1, 80, 3000], "output": [1, 1500, 1024], "precision": "fp16", "layers": "0-11"},
-    "audio_encoder_back": {"input": [1, 1500, 1024], "output": [1, 375, 1024], "precision": "fp16", "layers": "12-23+norm+merge+adaptor"},
-    "decoder": {"prefill_chunk": 64, "decode_chunk": 1, "precision": "w8a16", "kv_cache_tokens": 8192, "cpu_rope": true, "cpu_attention": true},
+    "audio_encoder_front": {
+      "input": [
+        1,
+        80,
+        3000
+      ],
+      "output": [
+        1,
+        1500,
+        1024
+      ],
+      "precision": "fp16",
+      "layers": "0-11"
+    },
+    "audio_encoder_back": {
+      "input": [
+        1,
+        1500,
+        1024
+      ],
+      "output": [
+        1,
+        375,
+        1024
+      ],
+      "precision": "fp16",
+      "layers": "12-23+norm+merge+adaptor"
+    },
+    "decoder": {
+      "prefill_chunk": 64,
+      "decode_chunk": 1,
+      "precision": "w16a16",
+      "kv_cache_tokens": 8192,
+      "cpu_rope": true,
+      "cpu_attention": true
+    },
     "logits_range_policy": "smallest power of two >= max(64, calibration_max_abs*1.1)"
   },
   "server_build_evidence": {
@@ -62,7 +103,11 @@
     "log_mel_alignment": {
       "scope": "first full 30-second chunk of R8001_M8004_0000_300s.wav against official WhisperFeatureExtractor",
       "source_wav_sha256": "123c057c80145117cf5efa3d2c985447fdbd48504e33f5ad6bc773e26844e8ff",
-      "shape": [1, 80, 3000],
+      "shape": [
+        1,
+        80,
+        3000
+      ],
       "all_finite": true,
       "cosine": 0.9999912521,
       "mean_abs_error": 0.0007332928,
@@ -79,16 +124,69 @@
       "minimum_cosine": 0.995,
       "status": "valid"
     },
+    "cpu_frontend_audio_alignment_120s": {
+      "scope": "four 30-second chunks of the clean 120-second regression WAV; official HF FP32 features and embeddings versus actual MNN whisper_fbank and MNN CPU front/back graphs",
+      "source_wav_sha256": "80cf2405c23411b662e86950957e6ab45b7ac6c9d5f18bbea53553da6ef1ebe7",
+      "chunk_count": 4,
+      "log_mel_cosine": 0.9999958732,
+      "log_mel_mean_abs_error": 0.0005859451,
+      "audio_embedding_cosine": 0.9999067051,
+      "worst_chunk_audio_embedding_cosine": 0.9998102006,
+      "minimum_cosine": 0.995,
+      "report_sha256": "651bd72b92751f9f9fc92b3d1224c8fc441e8897ca8c90d8b87ff5dd104a035a",
+      "status": "valid"
+    },
+    "mnn_cpu_decoder_regression": {
+      "scope": "corrected full prompt contract with clean 30-second and 120-second WAVs on the MNN CPU W8 decoder",
+      "prompt_ids_match_hf_contract": true,
+      "120s_segments": 19,
+      "120s_speakers": 4,
+      "120s_last_timestamp": 119.98,
+      "120s_hf_bf16_transcript_character_similarity": 0.9984962406,
+      "report_sha256": "7cf344020e4fafdd07f9bb663014bfa4778e25acf4fd9f5b6e09942de51b3515",
+      "status": "valid"
+    },
+    "hf_mnn_cpu_teacher_forced_alignment": {
+      "scope": "same 30-second audio embedding, 472 prompt token IDs, and 181 HF reference token IDs; first 48 decode steps",
+      "prompt_and_reference_token_ids_exact": true,
+      "steps": 48,
+      "top1_agreement": 1,
+      "logits_cosine_mean": 0.9977194683,
+      "logits_cosine_min": 0.985197062,
+      "top20_overlap_mean": 19.125,
+      "first_top1_mismatch": null,
+      "report_sha256": "84a1cc8ffc4fdf99fbe21b0e0bf861d698631637dc91606beb9bc2d0ad1b18e9",
+      "status": "valid"
+    },
+    "audio_token_boundary_alignment": {
+      "scope": "host runtime audio spans at 58, 60, 62, 100, and 120 seconds against the pinned HF processor contract",
+      "last_marker_seconds": [
+        55,
+        60,
+        60,
+        100,
+        120
+      ],
+      "100s_marker_token_ids": [
+        16,
+        15,
+        15
+      ],
+      "100s_marker_audio_embedding_position": 1240,
+      "report_sha256": "78af3e976254e4c22ac231b9b5c4ccfdf2c41fc8b538eba6c4f3c0a58553ab14",
+      "status": "valid"
+    },
     "decoder": {
       "status": "context-compile-valid",
       "strategy": "CPU fused attention and RoPE; HTP W8A16 projection, FFN, and lm_head graphs",
       "context_count": 31,
-      "context_bytes": 615530496,
+      "context_bytes": 1202348032,
       "context_set_sha256": "3dd95cb76da0d0cf41605e8a7c48654121a14fb2aebf3f3f54443d2db1140810",
       "wrapper_bytes": 257032,
-      "wrapper_sha256": "6e14dc8af6adefe08153f28120f4c04790be37087f73d1378e2a00fecea8c560",
+      "wrapper_sha256": "594bc8b4320297a2d0ca6420424142019d484d99ed8ef03775f7d6f677a67249",
       "context_compile_seconds": 358.3304,
-      "note": "Full HTP attention remains infeasible because QAIRT requires 16 MiB for the 8192-token past-key InputSlicePad while SM8850 provides 8 MiB VTCM. Device execution is still unverified."
+      "note": "The retained W16A16 artifact passes its historical same-device alignment and single 300-second gate. The 2026-08-20 clean rebuild and AliMeeting 10x300 gates failed, so it remains an investigation candidate rather than a production release.",
+      "candidate_release_manifest_sha256": "12831c6fd9bc687b2db20a82f9fdad1c835f5f711de207598766e26ccc7d6b1c"
     }
   },
   "runtime": {
@@ -96,12 +194,190 @@
     "mel_bins": 80,
     "chunk_seconds": 30,
     "audio_tokens_per_second": 12.5,
-    "time_marker_seconds": 2,
+    "time_marker_seconds": 5,
     "max_audio_seconds": 300,
     "max_sequence_tokens": 8192,
     "max_new_tokens": 4096,
     "eos_token_id": 151645,
     "sampling": "greedy",
-    "repetition_penalty": null
+    "repetition_penalty": null,
+    "qnn_performance_profile": "burst",
+    "qnn_dcvs_enabled": false,
+    "qnn_sleep_disabled": true,
+    "qnn_voltage_corner": "max",
+    "decoder_cpu_precision": "normal"
+  },
+  "device_decoder_diagnostics": {
+    "layer_hidden_cosine_mean_0_7_15_23_27": [
+      0.9995129,
+      0.9941384,
+      0.9857922,
+      0.9641181,
+      0.9655035
+    ],
+    "strict_fp16": {
+      "top1_agreement": 0.9791666667,
+      "logits_cosine_mean": 0.9533521171,
+      "logits_cosine_min": 0.7169181109,
+      "first_top1_mismatch_step": 21
+    },
+    "android_full_cpu_mislabeled_as_strict_fp16_graph30_cpu": {
+      "top1_agreement": 0.9791666667,
+      "logits_cosine_mean": 0.9957897571,
+      "logits_cosine_min": 0.9740539197,
+      "first_top1_mismatch_step": 3,
+      "wrapper_sha256_prefix": "984e846e",
+      "status": "invalid_as_qnn_evidence"
+    },
+    "android_full_cpu_180_steps": {
+      "top1_agreement": 0.9833333333,
+      "logits_cosine_mean": 0.9958542326,
+      "logits_cosine_min": 0.9498007131,
+      "top1_mismatch_count": 3,
+      "wrapper_sha256_prefix": "984e846e",
+      "status": "invalid_as_qnn_evidence"
+    },
+    "strict_fp16_layer27_and_output_cpu": {
+      "qnn_plugin_wrapper_sha256": "5a69c2e3306c394258475eab365c13753226110a8f2d4a33291850eb936e2e7a",
+      "status": "invalid_partition_no_logits_at_step_0"
+    },
+    "w4a16_cpu_against_w8_cpu_180_steps": {
+      "top1_agreement": 0.9166666667,
+      "logits_cosine_mean": 0.9446750039,
+      "logits_cosine_min": 0.6082801575,
+      "first_top1_mismatch_step": 5,
+      "status": "rejected_before_device_due_to_cpu_quality_regression"
+    },
+    "w16a16_cpu_against_w8_cpu_180_steps": {
+      "top1_agreement": 0.9944444444,
+      "logits_cosine_mean": 0.997283598,
+      "logits_cosine_min": 0.9773523914,
+      "first_top1_mismatch_step": 132,
+      "status": "promoted_to_qnn_device_alignment_test"
+    },
+    "release_decoder_restored_sha256": "d387826b9ae6fe09cf5cbc6bfd8dac1a6e31944d4db32d858a419a6dba3b4d9d",
+    "w16a16_device": {
+      "runtime_precision": "normal",
+      "weight_sha256": "7d4c35add71427d6963bf0fb2b2f11ff9875f58530291107582bdb3b485b3f85",
+      "artifact_manifest_sha256": "12831c6fd9bc687b2db20a82f9fdad1c835f5f711de207598766e26ccc7d6b1c",
+      "android_cpu_vs_qnn_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9999983288,
+        "logits_cosine_min": 0.9999632962,
+        "first_top1_mismatch": null
+      },
+      "w8_server_cpu_vs_w16_qnn_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9973072328,
+        "logits_cosine_min": 0.9768530279,
+        "first_top1_mismatch": null
+      },
+      "regression_30_60_90_120": {
+        "statuses": [
+          "ok",
+          "ok",
+          "ok",
+          "ok"
+        ],
+        "segment_counts": [
+          4,
+          10,
+          15,
+          19
+        ],
+        "rtf": [
+          0.553181,
+          0.416983,
+          0.514228,
+          0.52305
+        ]
+      },
+      "regression_300": {
+        "status": "ok",
+        "segments": 54,
+        "speakers": 4,
+        "last_timestamp": 299.92,
+        "rtf": 0.950522,
+        "peak_pss_bytes": 2661988352,
+        "result_sha256": "61ac1544f14052039864fde07156e44004140cd6569c43b4cb2c43825ec5fb2e",
+        "semantic_audit": "pass_with_recorded_differences",
+        "semantic_audit_sha256": "0c3f3a467e301ab1cecc25557cb466e08d397892a55fa4169f858ec5ac4a21ca"
+      },
+      "hf_fp32_reference_300": {
+        "segments": 56,
+        "speakers": 4,
+        "last_timestamp": 299.99,
+        "result_sha256": "441f8f24ee86e6c1795ddd783ae09ea2f92eca223e5e2213977bdfed969b72e8"
+      },
+      "status": "selected_correctness_candidate_single_300s_pass"
+    },
+    "w8_pure_fp16_qnn": {
+      "wrapper_sha256": "6e14dc8af6adefe08153f28120f4c04790be37087f73d1378e2a00fecea8c560",
+      "weight_sha256": "efc0132088e59d80b20f77b0fc3f53aade02a6a08fc6bd9bb3ea11e7a6d3b4ee",
+      "server_cpu_before_after_strip_180_steps": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 1,
+        "logits_cosine_min": 1
+      },
+      "android_normal_cpu_vs_qnn_180_steps": {
+        "top1_agreement": 0.9944444444,
+        "logits_cosine_mean": 0.9974315246,
+        "logits_cosine_min": 0.9664272131,
+        "first_top1_mismatch_step": 3
+      },
+      "server_cpu_vs_qnn_48_steps_low_precision_diagnostic": {
+        "top1_agreement": 1,
+        "logits_cosine_mean": 0.9976446008,
+        "logits_cosine_min": 0.9758628428
+      },
+      "android_normal_cpu_vs_qnn_48_steps": {
+        "top1_agreement": 0.9791666667,
+        "mismatch_count": 1,
+        "first_top1_mismatch_step": 3
+      },
+      "status": "backup_candidate_48_step_gate_failed"
+    },
+    "normal_precision_free_generation": {
+      "durations_seconds": [
+        30,
+        60,
+        90,
+        120
+      ],
+      "process_status": [
+        "ok",
+        "ok",
+        "ok",
+        "ok"
+      ],
+      "segment_counts": [
+        4,
+        10,
+        15,
+        19
+      ],
+      "rtf": [
+        0.467863,
+        0.423629,
+        0.422819,
+        0.472396
+      ],
+      "semantic_audit": "pass_with_recorded_minor_differences",
+      "status": "valid",
+      "artifact_manifest_sha256": "73c245d9c24cba146ed21639c2a56957ed812aefefe8152fed8689c16440deb0",
+      "payload_file_count": 55,
+      "prompt_alignment": [
+        "valid",
+        "valid",
+        "valid",
+        "valid"
+      ],
+      "peak_pss_bytes": [
+        546489344,
+        576571392,
+        838252544,
+        1081573376
+      ]
+    }
   }
 }

@@ -1,0 +1,61 @@
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -90,6 +90,19 @@ void writeSegments(std::ostream& output, const std::string& raw, bool* parsed) {
+     *parsed = !first && complete;
+ }
+ 
++int configuredTokenLimit(const char* configPath, const char* key) {
++    std::ifstream config(configPath);
++    std::ostringstream content;
++    content << config.rdbuf();
++    std::smatch match;
++    const std::string text = content.str();
++    const std::regex field("\"" + std::string(key) + R"("\s*:\s*([0-9]+))");
++    if (!std::regex_search(text, match, field)) {
++        return -1;
++    }
++    return std::stoi(match[1].str());
++}
++
+ }  // namespace
+ 
+ int main(int argc, char** argv) {
+@@ -101,8 +114,16 @@ int main(int argc, char** argv) {
+         return 2;
+     }
++    const int maxAllTokens = configuredTokenLimit(argv[1], "max_all_tokens");
++    const int maxNewTokens = configuredTokenLimit(argv[1], "max_new_tokens");
++    if (maxAllTokens <= 0 || maxNewTokens <= 0 || maxNewTokens >= maxAllTokens) {
++        std::cerr << "config.json must contain valid max_all_tokens and max_new_tokens" << std::endl;
++        return 2;
++    }
+     std::unique_ptr<Llm> llm(Llm::createLLM(argv[1]));
+-    llm->set_config(
+-        R"({"sampler_type":"greedy","max_all_tokens":8192,"max_new_tokens":4096,"async":false})");
++    std::ostringstream runtimeConfig;
++    runtimeConfig << "{\"sampler_type\":\"greedy\",\"max_all_tokens\":" << maxAllTokens
++                  << ",\"max_new_tokens\":" << maxNewTokens << ",\"async\":false}";
++    llm->set_config(runtimeConfig.str());
+     if (!llm->load()) {
+         std::cout << "{\"format\":\"meetnote.moss_qnn_result.v1\",\"status\":\"error\","
+                      "\"errors\":[\"model_load_failed\"],\"raw_text\":\"\",\"segments\":[]}\n";
+@@ -128,7 +149,7 @@ int main(int argc, char** argv) {
+     });
+     auto started = std::chrono::steady_clock::now();
+     std::ostringstream raw;
+-    llm->response(prompt, &raw, nullptr, 4096);
++    llm->response(prompt, &raw, nullptr, maxNewTokens);
+     double totalMs = std::chrono::duration<double, std::milli>(
+         std::chrono::steady_clock::now() - started).count();
+     monitoring.store(false);
+@@ -136,7 +157,8 @@ int main(int argc, char** argv) {
+ 
+     const auto* context = llm->getContext();
+     bool parsed = false;
+-    bool budget = context->status == LlmStatus::MAX_TOKENS_FINISHED || context->gen_seq_len >= 4096;
++    bool budget = context->status == LlmStatus::MAX_TOKENS_FINISHED ||
++                  context->gen_seq_len >= maxNewTokens;
+     bool runtimeError = context->status == LlmStatus::INTERNAL_ERROR || context->status == LlmStatus::TIMEOUT;
+     std::ostringstream result;
+     result << "{\"format\":\"meetnote.moss_qnn_result.v1\",\"status\":\"";

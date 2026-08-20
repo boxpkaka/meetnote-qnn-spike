@@ -27,24 +27,35 @@ class MossRuntimeTest(unittest.TestCase):
         digits = {str(value): 100 + value for value in range(10)}
         ids = moss.build_audio_span_ids(63, 7, digits)
         self.assertEqual(63, ids.count(7))
-        self.assertEqual([102, 104], [token for token in ids if token != 7])
+        self.assertEqual([105], [token for token in ids if token != 7])
         self.assertEqual(list(range(63)), list(range(len(moss.audio_embedding_positions(ids, 7)))))
         self.assertEqual(63, len(moss.validate_embedding_count(ids, 7, 63)))
+
+    def test_time_markers_match_pinned_processor_interval(self):
+        digits = {str(value): 100 + value for value in range(10)}
+        ids = moss.build_audio_span_ids(120 * 25 // 2, 7, digits)
+        marker_ids = [token for token in ids if token != 7]
+        expected = [
+            token
+            for second in range(5, 121, 5)
+            for token in (digits[digit] for digit in str(second))
+        ]
+        self.assertEqual(expected, marker_ids)
 
     def test_placeholder_expansion_encodes_sides_separately(self):
         digits = {str(value): 100 + value for value in range(10)}
         ids = moss.expand_audio_placeholder(
             "a<A>b",
             audio_token="<A>",
-            audio_token_count=25,
+            audio_token_count=63,
             audio_token_id=7,
             digit_token_ids=digits,
             encode=lambda value: [ord(char) for char in value],
         )
         self.assertEqual(ord("a"), ids[0])
-        self.assertEqual(102, ids[-2])
         self.assertEqual(ord("b"), ids[-1])
-        self.assertEqual(25, ids.count(7))
+        self.assertEqual(63, ids.count(7))
+        self.assertEqual([105], [token for token in ids[1:-1] if token != 7])
 
     def test_sequence_limit_is_not_silently_truncated(self):
         digits = {str(value): value for value in range(10)}

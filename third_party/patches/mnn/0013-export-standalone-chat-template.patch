@@ -1,0 +1,31 @@
+From 6d1a0e5373b84329c85916d6cb27ae365a95cc42 Mon Sep 17 00:00:00 2001
+From: MeetNote <meetnote@example.com>
+Date: Wed, 19 Aug 2026 18:00:00 +0800
+Subject: [PATCH] export standalone tokenizer chat template
+
+Transformers can store the active chat template in chat_template.jinja rather
+than tokenizer_config.json. Preserve that template in tokenizer.mtok so native
+apply_chat_template matches the Hugging Face processor.
+---
+ transformers/llm/export/utils/tokenizer.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/transformers/llm/export/utils/tokenizer.py b/transformers/llm/export/utils/tokenizer.py
+index 0e45473..a0dd487 100644
+--- a/transformers/llm/export/utils/tokenizer.py
++++ b/transformers/llm/export/utils/tokenizer.py
+@@ -504,6 +504,11 @@ class LlmTokenizer(PreTrainedTokenizer):
+                 with open(tokenizer_config_path, 'r', encoding='utf-8') as tc:
+                     tc_json = json.load(tc)
+                 chat_template = tc_json.get('chat_template', '')
++                if not chat_template:
++                    chat_template_path = os.path.join(os.path.dirname(tokenizer_json_path), 'chat_template.jinja')
++                    if os.path.exists(chat_template_path):
++                        with open(chat_template_path, 'r', encoding='utf-8') as template_file:
++                            chat_template = template_file.read()
+                 eos = tc_json.get('eos_token', '')
+                 if isinstance(eos, dict):
+                     eos_token = eos.get('content', '')
+-- 
+2.43.0
+

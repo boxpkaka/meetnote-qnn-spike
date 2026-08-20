@@ -1,16 +1,62 @@
 diff --git a/source/backend/qnn/execution/QNNConvolution.cpp b/source/backend/qnn/execution/QNNConvolution.cpp
-index ae3ca145..0d585428 100644
+index ae3ca145..09e47ee5 100644
 --- a/source/backend/qnn/execution/QNNConvolution.cpp
 +++ b/source/backend/qnn/execution/QNNConvolution.cpp
-@@ -593 +593,2 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+@@ -590,36 +590,84 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+         mDequantAlpha = quanCommon->alpha.get();
+         int totalCount = quanCommon->alpha.size();
+         mBlockSize = totalCount / oc;
 -        // Todo: result is wrong, need to verify
-+        // HTP supports LPBQ only for 4-bit weights expanded to int8. Native
-+        // blockwise int8 weights need a supported per-channel fallback.
-@@ -597 +598,2 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
++        // HTP supports LPBQ only for 4-bit weights expanded to int8. Preserve
++        // native blockwise int8 weights by dequantizing them to floating-point
++        // constants instead of introducing a second, per-channel quantization.
+         if(mBlockSize > 1){
++            if (quanCommon->originBits == 8) {
++                const int inputChannels = ic / group;
++                const int elementsPerOutput = inputChannels * kernelH * kernelW;
++                if (elementsPerOutput <= 0 || elementsPerOutput % mBlockSize != 0) {
++                    MNN_ERROR(
++                        "[Error]: Invalid QNN block weight layout: elementsPerOutput=%d blockCount=%d\n",
++                        elementsPerOutput, mBlockSize);
++                    return false;
++                }
++                const int elementsPerBlock = elementsPerOutput / mBlockSize;
++                std::vector<float> floatWeightData(oc * elementsPerOutput, 0.0f);
++                for (int output = 0; output < oc; ++output) {
++                    for (int input = 0; input < inputChannels; ++input) {
++                        for (int h = 0; h < kernelH; ++h) {
++                            for (int w = 0; w < kernelW; ++w) {
++                                const int sourceIndexWithinOutput =
++                                    w + kernelW * (h + kernelH * input);
++                                const int block = sourceIndexWithinOutput / elementsPerBlock;
++                                const int destinationIndex =
++                                    output + oc * (input + inputChannels * (w + kernelW * h));
++                                floatWeightData[destinationIndex] =
++                                    source[output * elementsPerOutput + sourceIndexWithinOutput] *
++                                    mDequantAlpha[output * mBlockSize + block];
++                            }
++                        }
++                    }
++                }
++                Qnn_DataType_t floatDatatype = QNN_DATATYPE_FLOAT_32;
++                if(mBackend->getUseFP16()){
++                    floatDatatype = QNN_DATATYPE_FLOAT_16;
++                }
++                this->createStaticFloatTensor(
++                    "weight", floatDatatype,
++                    {(uint32_t)kernelH, (uint32_t)kernelW, (uint32_t)inputChannels, (uint32_t)oc},
++                    floatWeightData.data());
++                mWeightQuant = false;
++                this->createBias(dataType, oc, input, nullptr);
++                return NO_ERROR;
++            }
++
+             Qnn_QuantizeParams_t weightQuantize{};
+             weightQuantize.encodingDefinition = QNN_DEFINITION_DEFINED;
 -            weightQuantize.quantizationEncoding = QNN_QUANTIZATION_ENCODING_BLOCKWISE_EXPANSION;
 +            if (quanCommon->originBits == 4) {
 +                weightQuantize.quantizationEncoding = QNN_QUANTIZATION_ENCODING_BLOCKWISE_EXPANSION;
-@@ -599,11 +601,17 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+             
 -            weightBlockwiseExpansionEncoding.axis = 3;
 -            weightBlockwiseExpansionEncoding.numBlocksPerAxis = mBlockSize;
 -            weightBlockwiseExpansionEncoding.blockScaleBitwidth = 4;
@@ -34,76 +80,33 @@ index ae3ca145..0d585428 100644
 +                        if(mDequantAlpha[i * mBlockSize + j] > maxscale){
 +                            maxscale = mDequantAlpha[i * mBlockSize + j];
 +                        }
-+                    }
+                     }
 +                    float blockScale = maxscale / 16.0f;
 +                    for(int j = 0; j < mBlockSize; ++j){
 +                        int quantBlock = round(mDequantAlpha[i * mBlockSize + j] / blockScale);
 +                        mBlockScale[i * mBlockSize + j] = (uint8_t)std::min(std::max(quantBlock, 1), 16);
-@@ -610,0 +619,19 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
++                    }
 +                    mScaleOffsetData[i].scale = blockScale;
 +                    mScaleOffsetData[i].offset = 0;
-+                }
-+                weightBlockwiseExpansionEncoding.scaleOffsets = mScaleOffsetData.data();
-+                weightBlockwiseExpansionEncoding.blocksScale8 = mBlockScale.data();
-+                weightQuantize.blockwiseExpansion = &weightBlockwiseExpansionEncoding;
-+            } else if (quanCommon->originBits == 8) {
-+                weightQuantize.quantizationEncoding = QNN_QUANTIZATION_ENCODING_AXIS_SCALE_OFFSET;
-+                weightQuantize.axisScaleOffsetEncoding.axis = 3;
-+                weightQuantize.axisScaleOffsetEncoding.numScaleOffsets = oc;
-+                mScaleOffsetData.resize(oc);
-+
-+                const int inputChannels = ic / group;
-+                const int elementsPerOutput = inputChannels * kernelH * kernelW;
-+                if (elementsPerOutput <= 0 || elementsPerOutput % mBlockSize != 0) {
-+                    MNN_ERROR(
-+                        "[Error]: Invalid QNN block weight layout: elementsPerOutput=%d blockCount=%d\n",
-+                        elementsPerOutput, mBlockSize);
-+                    return false;
-@@ -612,4 +639,31 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+                 }
 -                float blockScale = maxscale / 16.0f;
 -                for(int j = 0; j < mBlockSize; ++j){
 -                    int quantBlock = round(mDequantAlpha[i * mBlockSize + j] / blockScale);
 -                    mBlockScale[i * mBlockSize + j] = (uint8_t)std::min(std::max(quantBlock, 1), 16);
-+                const int elementsPerBlock = elementsPerOutput / mBlockSize;
-+                constexpr float kSignedInt8Max = 127.0f;
-+                for (int output = 0; output < oc; ++output) {
-+                    float maxAbs = 0.0f;
-+                    for (int index = 0; index < elementsPerOutput; ++index) {
-+                        const int block = index / elementsPerBlock;
-+                        const float value = source[output * elementsPerOutput + index] *
-+                                            mDequantAlpha[output * mBlockSize + block];
-+                        maxAbs = std::max(maxAbs, std::abs(value));
-+                    }
-+                    const float perChannelScale = maxAbs > 0.0f ? maxAbs / kSignedInt8Max : 1.0f;
-+                    mScaleOffsetData[output].scale = perChannelScale;
-+                    mScaleOffsetData[output].offset = 0;
-+
-+                    for (int input = 0; input < inputChannels; ++input) {
-+                        for (int h = 0; h < kernelH; ++h) {
-+                            for (int w = 0; w < kernelW; ++w) {
-+                                const int sourceIndexWithinOutput =
-+                                    w + kernelW * (h + kernelH * input);
-+                                const int block = sourceIndexWithinOutput / elementsPerBlock;
-+                                const float value =
-+                                    source[output * elementsPerOutput + sourceIndexWithinOutput] *
-+                                    mDequantAlpha[output * mBlockSize + block];
-+                                const int requantized = (int)std::round(value / perChannelScale);
-+                                const int destinationIndex =
-+                                    output + oc * (input + inputChannels * (w + kernelW * h));
-+                                quantWeightData[destinationIndex] =
-+                                    (int8_t)std::min(std::max(requantized, -127), 127);
-+                            }
-+                        }
-+                    }
-@@ -617,2 +671,4 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+-                }
 -                mScaleOffsetData[i].scale = blockScale;
 -                mScaleOffsetData[i].offset = 0;
-+                weightQuantize.axisScaleOffsetEncoding.scaleOffset = mScaleOffsetData.data();
++                weightBlockwiseExpansionEncoding.scaleOffsets = mScaleOffsetData.data();
++                weightBlockwiseExpansionEncoding.blocksScale8 = mBlockScale.data();
++                weightQuantize.blockwiseExpansion = &weightBlockwiseExpansionEncoding;
 +            } else {
 +                MNN_ERROR("[Error]: Unsupported QNN block weight bitwidth: %d\n", quanCommon->originBits);
 +                return false;
-@@ -620,3 +676 @@ bool QNNConvolution::createWeightAndBias(Qnn_DataType_t dataType, const Tensor *
+             }
 -            weightBlockwiseExpansionEncoding.scaleOffsets = mScaleOffsetData.data();
 -            weightBlockwiseExpansionEncoding.blocksScale8 = mBlockScale.data();
 -            weightQuantize.blockwiseExpansion = &weightBlockwiseExpansionEncoding;
 +
+             this->createStaticTensor("quantWeight", QNN_DATATYPE_SFIXED_POINT_8, {(uint32_t)kernelH, (uint32_t)kernelW, (uint32_t)ic / (uint32_t)group, (uint32_t)oc}, (void *) quantWeightData.data(), weightQuantize);
+             std::function<void()> mReleaseWeightScaleOffset = [&](){
+                 std::vector<Qnn_ScaleOffset_t>().swap(mScaleOffsetData);

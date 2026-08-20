@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -17,6 +18,8 @@
 using MNN::Transformer::Llm;
 using MNN::Transformer::LlmContext;
 using MNN::Transformer::LlmStatus;
+using MNN::Transformer::MultimodalPrompt;
+using MNN::Transformer::PromptAudioPart;
 
 namespace {
 
@@ -369,13 +372,14 @@ int parseNonNegativeInt(const char* value, const char* label) {
 }  // namespace
 
 int main(int argc, const char* argv[]) {
-    if (argc < 5 || argc > 10) {
+    if (argc < 5 || argc > 11) {
         std::cerr
                 << "Usage: " << argv[0]
                 << " <config.json> <prompt.txt> <reference.txt> <output-prefix>"
                 << " [max-steps=48; 0=tokenize-only] [top-k=20] [threads=4]"
                 << " [trace-step=-1]"
-                << " [token-ids-output]\n";
+                << " [token-ids-output]"
+                << " [moss-wav; reference file contains whitespace-separated token IDs]\n";
         return 2;
     }
 
@@ -384,6 +388,7 @@ int main(int argc, const char* argv[]) {
     const int threads = argc >= 8 ? parsePositiveInt(argv[7], "threads") : 4;
     const int traceStep = argc >= 9 ? std::stoi(argv[8]) : -1;
     const std::string tokenIdsOutput = argc >= 10 ? argv[9] : "";
+    const std::string mossWav = argc >= 11 ? argv[10] : "";
     if (maxSteps < 0 || topK < 0 || threads < 0) {
         return 2;
     }
@@ -409,13 +414,31 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
     const std::string prefix = argv[4];
+    const char* hiddenPrefixEnv = std::getenv("MOSS_TEACHER_HIDDEN_PREFIX");
+    const std::string hiddenPrefix = hiddenPrefixEnv == nullptr ? "" : hiddenPrefixEnv;
+    std::ofstream hiddenMetadata;
+    std::ofstream hiddenBinary;
+    if (!hiddenPrefix.empty()) {
+        hiddenMetadata.open(hiddenPrefix + ".jsonl", std::ios::out | std::ios::trunc);
+        hiddenBinary.open(hiddenPrefix + ".f32", std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!hiddenMetadata.is_open() || !hiddenBinary.is_open()) {
+            std::cerr << "failed to open hidden-state output files\n";
+            return 1;
+        }
+    }
     std::unique_ptr<BoundaryTraceWriter> boundaryTrace;
     bool traceActive = false;
     std::ostringstream config;
     config << "{\"async\":false,\"enable_debug\":"
            << (traceStep >= 0 ? "true" : "false")
-           << ",\"backend_type\":\"cpu\",\"thread_num\":" << threads
-           << ",\"jinja\":{\"context\":{\"enable_thinking\":false}}}";
+           << ",\"backend_type\":\"cpu\",\"thread_num\":" << threads;
+    if (!hiddenPrefix.empty()) {
+        config << ",\"hidden_states\":true";
+    }
+    if (mossWav.empty()) {
+        config << ",\"jinja\":{\"context\":{\"enable_thinking\":false}}";
+    }
+    config << "}";
     llm->set_config(config.str());
     llm->set_config("{\"tmp_path\":\"/tmp/meetnote-mnn-teacher\"}");
     if (traceStep >= 0) {
@@ -450,8 +473,23 @@ int main(int argc, const char* argv[]) {
 
     llm->reset();
     llm->generate_init();
-    const std::vector<int> inputIds = llm->tokenizer_encode(qwenChatPrompt(prompt));
-    const std::vector<int> referenceIds = llm->tokenizer_encode(reference);
+    std::vector<int> inputIds;
+    std::vector<int> referenceIds;
+    if (mossWav.empty()) {
+        inputIds = llm->tokenizer_encode(qwenChatPrompt(prompt));
+        referenceIds = llm->tokenizer_encode(reference);
+    } else {
+        MultimodalPrompt multimodal;
+        multimodal.prompt_template = llm->apply_chat_template(
+            "<audio>input</audio>\n" + prompt);
+        PromptAudioPart audio;
+        audio.file_path = mossWav;
+        multimodal.audios["input"] = audio;
+        inputIds = llm->tokenizer_encode(multimodal);
+        std::istringstream tokenStream(reference);
+        int token = 0;
+        while (tokenStream >> token) referenceIds.push_back(token);
+    }
     if (!writeTokenIds(tokenIdsOutput, inputIds, referenceIds)) {
         std::cerr << "failed to write token IDs: " << tokenIdsOutput << "\n";
         return 1;
@@ -510,6 +548,37 @@ int main(int argc, const char* argv[]) {
             return 1;
         }
         values += info->size - vocabSize;
+
+        if (!hiddenPrefix.empty()) {
+            auto outputs = llm->getOutputs();
+            int hiddenIndex = llm->getOutputIndex("hidden_states");
+            if (hiddenIndex < 0 || hiddenIndex >= static_cast<int>(outputs.size()) ||
+                outputs[hiddenIndex] == nullptr || outputs[hiddenIndex]->getInfo() == nullptr) {
+                std::cerr << "decode returned no hidden_states at step " << step << "\n";
+                return 1;
+            }
+            auto hidden = outputs[hiddenIndex];
+            const auto* hiddenInfo = hidden->getInfo();
+            const float* hiddenValues = hidden->readMap<float>();
+            if (hiddenValues == nullptr) {
+                std::cerr << "hidden_states are not readable at step " << step << "\n";
+                return 1;
+            }
+            hiddenBinary.write(
+                reinterpret_cast<const char*>(hiddenValues),
+                static_cast<std::streamsize>(hiddenInfo->size) * sizeof(float));
+            hiddenMetadata << "{\"step\":" << step << ",\"elements\":" << hiddenInfo->size
+                           << ",\"shape\":[";
+            for (size_t index = 0; index < hiddenInfo->dim.size(); ++index) {
+                if (index) hiddenMetadata << ',';
+                hiddenMetadata << hiddenInfo->dim[index];
+            }
+            hiddenMetadata << "]}\n";
+            if (!hiddenBinary.good() || !hiddenMetadata.good()) {
+                std::cerr << "failed while writing hidden_states at step " << step << "\n";
+                return 1;
+            }
+        }
 
         if (step == 0) {
             metadata << "{\"type\":\"header\""

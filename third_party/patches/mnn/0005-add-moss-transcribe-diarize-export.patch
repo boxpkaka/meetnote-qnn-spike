@@ -70,7 +70,7 @@ index 8b57cece..b6e97728 100644
          }
          if model_type in audio_models:
              return audio_models[model_type]
-@@ -172,6 +173,143 @@ class Qwen2Audio(Audio):
+@@ -172,6 +173,146 @@ class Qwen2Audio(Audio):
                      }})
          return onnx_model
  
@@ -147,9 +147,12 @@ index 8b57cece..b6e97728 100644
 +            'is_audio': True,
 +            'audio_type': 'moss_transcribe_diarize',
 +            'audio_pad': int(self.config.audio_token_id),
++            'audio_start': int(self.tokenizer.convert_tokens_to_ids('<|audio_start|>')),
++            'audio_end': int(self.tokenizer.convert_tokens_to_ids('<|audio_end|>')),
 +            'audio_merge_size': merge_size,
 +            'audio_tokens_per_second': 12.5,
-+            'time_marker_every_seconds': 2,
++            # Pinned processor_config.json uses five-second time anchors.
++            'time_marker_every_seconds': 5,
 +            'audio_front_model': 'audio_encoder_front.mnn',
 +            'audio_back_model': 'audio_encoder_back.mnn',
 +        })

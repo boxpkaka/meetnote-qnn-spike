@@ -1,0 +1,28 @@
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <atomic>
+ #include <chrono>
+ #include <fstream>
+@@ -146,8 +147,18 @@ int main(int argc, char** argv) {
+     if (!parsed) { result << "\"transcript_parse_failed\""; comma = true; }
+     if (budget) { if (comma) result << ','; result << "\"token_budget_exhausted\""; comma = true; }
+     if (runtimeError) { if (comma) result << ','; result << "\"runtime_error\""; }
++    size_t promptTokenCount = std::min(
++        static_cast<size_t>(context->prompt_len), context->history_tokens.size());
+     result << "],\"raw_text\":\"" << jsonEscape(raw.str()) << "\",\"segments\":" << segments.str()
+-           << ",\"generated_tokens\":" << context->gen_seq_len
++           << ",\"prompt_tokens\":" << context->prompt_len
++           << ",\"prompt_token_ids_complete\":"
++           << (promptTokenCount == static_cast<size_t>(context->prompt_len) ? "true" : "false")
++           << ",\"prompt_token_ids\":[";
++    for (size_t i = 0; i < promptTokenCount; ++i) {
++        if (i > 0) result << ',';
++        result << context->history_tokens[i];
++    }
++    result << "],\"generated_tokens\":" << context->gen_seq_len
+            << ",\"timings_ms\":{\"audio_encoder_front\":" << context->audio_front_us / 1000.0
+            << ",\"audio_encoder_back\":" << context->audio_back_us / 1000.0
+            << ",\"encoder\":" << context->audio_us / 1000.0

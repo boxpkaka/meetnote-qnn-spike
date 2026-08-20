@@ -1,0 +1,197 @@
+diff --git a/source/backend/cpu/CPUPlugin.cpp b/source/backend/cpu/CPUPlugin.cpp
+index b8369928..2840cf27 100644
+--- a/source/backend/cpu/CPUPlugin.cpp
++++ b/source/backend/cpu/CPUPlugin.cpp
+@@ -31,7 +31,7 @@ public:
+         kernel_ = getCPUComputeKernel(ctx_->op_type());
+         MNN_CHECK(nullptr != kernel_.get(), // NOLINT
+                   "CPU compute kernel has not been registered for plugin op.");
+-        kernel_->init(ctx_.get());
++        initSucceeded_ = kernel_->init(ctx_.get());
+         mNeedAllocIO = kernel_->needAllocIO();
+     }
+     virtual ~CPUPlugin() = default;
+@@ -45,9 +45,14 @@ public:
+ private:
+     std::unique_ptr<plugin::CPUKernelContext> ctx_;
+     std::shared_ptr<plugin::CPUComputeKernel> kernel_;
++    bool initSucceeded_ = false;
+ };
+ ErrorCode CPUPlugin::onResize(const std::vector<Tensor*>& inputs,
+                                const std::vector<Tensor*>& outputs) {
++    if (!initSucceeded_) {
++        MNN_ERROR("Plugin kernel initialization failed.\n");
++        return INVALID_VALUE;
++    }
+     ctx_->reset(inputs, outputs);
+     auto success = kernel_->resize(ctx_.get());
+     if (!success) {
+diff --git a/source/backend/qnn/backend/QNNBackend.cpp b/source/backend/qnn/backend/QNNBackend.cpp
+index 8bb510ff..b40afc7d 100644
+--- a/source/backend/qnn/backend/QNNBackend.cpp
++++ b/source/backend/qnn/backend/QNNBackend.cpp
+@@ -937,8 +937,12 @@ public:
+         _clean();
+         mFile = MNNOpenFile(filename, MNN_FILE_READ);
+         mSize = MNNGetFileSize(mFile);
++        if (mSize == std::numeric_limits<size_t>::max()) {
++            _clean();
++            return false;
++        }
+         mAddr = MNNMmapFile(mFile, mSize, true);
+-        return true;
++        return mAddr != nullptr;
+     }
+ };
+ 
+@@ -983,7 +987,10 @@ public:
+             binaryFile->offset((int64_t)offset);
+             binaryFile->read((char *)buffer, (int64_t)size);
+         } else {
+-            reader.open(path.c_str());
++            if (!reader.open(path.c_str())) {
++                MNN_ERROR("QNN: Failed to open external context binary: %s\n", path.c_str());
++                return false;
++            }
+             buffer = reader.addr();
+             size = reader.size();
+         }
+@@ -997,7 +1004,14 @@ public:
+             }
+             Qnn_ContextBinarySize_t binarySize = 0;
+             const QnnSystemContext_BinaryInfo_t* binaryInfo = nullptr;
+-            CALL_QNN(QNN::gContext.systemInterface.systemContextGetBinaryInfo(systemContextHandle, buffer, size, &binaryInfo,&binarySize));
++            auto error = QNN::gContext.systemInterface.systemContextGetBinaryInfo(
++                systemContextHandle, buffer, size, &binaryInfo, &binarySize);
++            if (QNN_SUCCESS != (error & 0xFFFF)) {
++                MNN_ERROR("QNN: Failed to read context binary metadata: %llu\n",
++                          static_cast<unsigned long long>(error));
++                QNN::gContext.systemInterface.systemContextFree(systemContextHandle);
++                return false;
++            }
+             copyMetadataToGraphsInfo(binaryInfo, mGraphsInfo, mGraphCount);
+             if (QNN_SUCCESS != QNN::gContext.systemInterface.systemContextFree(systemContextHandle)) {
+                 MNN_ERROR("Could not free system context handle.");
+@@ -1017,9 +1031,14 @@ public:
+             // Create Graph profile
+             MNN::QNN::createProfileHandle(QNN::gContext.QnnInterface, QNN::gContext.backendHandle, &mQnnProfileHandle);
+ 
+-            CALL_QNN(QNN::gContext.QnnInterface.contextCreateFromBinary(
++            auto createError = QNN::gContext.QnnInterface.contextCreateFromBinary(
+                 QNN::gContext.backendHandle, QNN::gContext.deviceHandle, mQnnContextConfig, buffer, size,
+-                &mQnnContextHandle, mQnnProfileHandle));
++                &mQnnContextHandle, mQnnProfileHandle);
++            if (QNN_SUCCESS != (createError & 0xFFFF)) {
++                MNN_ERROR("QNN: Failed to create context from binary: %llu\n",
++                          static_cast<unsigned long long>(createError));
++                return false;
++            }
+ 
+             mQnnGraphHandleVec.resize(mGraphCount, nullptr);
+ 
+@@ -1310,6 +1329,9 @@ public:
+ 
+             binarySize = (static_cast<size_t>(highDst) << 32) | static_cast<size_t>(lowDst);
+         }
++        if (binarySize == std::numeric_limits<size_t>::max()) {
++            binarySize = 0;
++        }
+         mRawExecutor.reset(new RawExecutorWrapper());
+         return mRawExecutor->compileModel(path, binaryOffset, binarySize, allGraphName);
+     }
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+index fa53d104..d6aebd6a 100644
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -46,33 +46,45 @@ std::string jsonEscape(const std::string& source) {
+ 
+ int64_t currentPssBytes() {
+     std::ifstream stream("/proc/self/smaps_rollup");
+-    std::string key;
+-    int64_t value = 0;
+-    std::string unit;
+-    while (stream >> key >> value >> unit) {
+-        if (key == "Pss:") return value * 1024;
+-        stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
++    std::string line;
++    while (std::getline(stream, line)) {
++        if (line.rfind("Pss:", 0) == 0) {
++            std::istringstream values(line.substr(4));
++            int64_t kib = 0;
++            values >> kib;
++            return kib * 1024;
++        }
+     }
+     return 0;
+ }
+ 
+ void writeSegments(std::ostream& output, const std::string& raw, bool* parsed) {
+     static const std::regex segment(
+-        R"(\[([0-9]+(?:\.[0-9]+)?)\]\[(S[0-9]+)\]([\s\S]*?)\[([0-9]+(?:\.[0-9]+)?)\])");
++        R"(\[([0-9]+(?:\.[0-9]+)?)\]\[(S[0-9]{2})\]([\s\S]*?)\[([0-9]+(?:\.[0-9]+)?)\])");
+     bool first = true;
++    bool complete = true;
++    size_t cursor = 0;
+     output << '[';
+     for (std::sregex_iterator it(raw.begin(), raw.end(), segment), end; it != end; ++it) {
++        auto gap = raw.substr(cursor, static_cast<size_t>(it->position()) - cursor);
++        if (gap.find_first_not_of(" \t\r\n") != std::string::npos) complete = false;
+         double start = std::stod((*it)[1].str());
+         double finish = std::stod((*it)[4].str());
+-        if (finish < start || (*it)[3].str().empty()) continue;
++        if (finish < start || (*it)[3].str().empty()) {
++            complete = false;
++            cursor = static_cast<size_t>(it->position() + it->length());
++            continue;
++        }
+         if (!first) output << ',';
+         first = false;
+-        *parsed = true;
+         output << "{\"start\":" << start << ",\"end\":" << finish
+                << ",\"speaker\":\"" << (*it)[2].str() << "\",\"text\":\""
+                << jsonEscape((*it)[3].str()) << "\"}";
++        cursor = static_cast<size_t>(it->position() + it->length());
+     }
++    if (raw.substr(cursor).find_first_not_of(" \t\r\n") != std::string::npos) complete = false;
+     output << ']';
++    *parsed = !first && complete;
+ }
+ 
+ }  // namespace
+diff --git a/transformers/llm/engine/src/llm.cpp b/transformers/llm/engine/src/llm.cpp
+index 2f163a49..35fdffdc 100644
+--- a/transformers/llm/engine/src/llm.cpp
++++ b/transformers/llm/engine/src/llm.cpp
+@@ -914,17 +914,27 @@ std::vector<int> Llm::generate(const std::vector<int>& input_ids, int max_tokens
+         }
+         int total_size = (int)input_ids.size();
+         int loop_size = UP_DIV(total_size, mBlockSize);
++        // Multimodal embedding owns state that spans the full prompt. Build it
++        // once, then slice the materialized sequence for fixed-size prefill.
++        auto all_input_embeds = embedding(input_ids);
++        if (all_input_embeds == nullptr) {
++            return {};
++        }
+         for (int i = 0; i < loop_size; i++) {
+             auto start = i * mBlockSize;
+             auto end = (i+1) * mBlockSize;
+             if (end >= total_size) {
+                 end = total_size;
+             }
+-            std::vector<int> chunk_ids(input_ids.begin() + start, input_ids.begin() + end);
+-            auto input_embeds = embedding(chunk_ids);
+-            if(input_embeds == nullptr) {
+-                return {};
+-            }
++            auto dims = all_input_embeds->getInfo()->dim;
++            std::vector<int> starts(dims.size(), 0);
++            std::vector<int> sizes = dims;
++            starts[mSeqLenIndex] = start;
++            sizes[mSeqLenIndex] = end - start;
++            auto input_embeds = Express::_Slice(
++                all_input_embeds,
++                _var<int>(starts, {static_cast<int>(starts.size())}),
++                _var<int>(sizes, {static_cast<int>(sizes.size())}));
+             generate(input_embeds, 0);
+         }
+         completePrefixWrite();

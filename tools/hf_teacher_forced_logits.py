@@ -69,10 +69,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--model-revision")
     parser.add_argument("--prompt", type=Path, required=True)
-    parser.add_argument("--reference", type=Path, required=True)
+    reference = parser.add_mutually_exclusive_group(required=True)
+    reference.add_argument("--reference", type=Path)
+    reference.add_argument("--reference-result-json", type=Path)
+    parser.add_argument("--audio", type=Path)
     parser.add_argument("--output-prefix", type=Path)
     parser.add_argument("--expected-metadata", type=Path)
     parser.add_argument("--token-ids-output", type=Path)
+    parser.add_argument("--reference-token-ids-output", type=Path)
     parser.add_argument("--max-steps", type=int, default=48)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--threads", type=int, default=32)
@@ -85,17 +89,52 @@ def main() -> None:
     if not args.validate_only and args.output_prefix is None:
         raise ValueError("--output-prefix is required unless --validate-only is set")
 
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model,
-        local_files_only=True,
-        use_fast=True,
-    )
     user_prompt = args.prompt.read_text(encoding="utf-8")
-    reference = args.reference.read_text(encoding="utf-8")
-    prompt_ids = tokenizer.encode(qwen_chat_prompt(user_prompt), add_special_tokens=False)
+    reference = (
+        args.reference.read_text(encoding="utf-8")
+        if args.reference is not None
+        else json.loads(args.reference_result_json.read_text(encoding="utf-8"))["raw_transcript"]
+    )
+    prepared_inputs = None
+    if args.audio is not None:
+        import soundfile as sf
+        from transformers import AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(
+            args.model, trust_remote_code=True, local_files_only=True, fix_mistral_regex=True
+        )
+        tokenizer = processor.tokenizer
+        messages = [{"role": "user", "content": [
+            {"type": "audio", "audio": str(args.audio)},
+            {"type": "text", "text": user_prompt},
+        ]}]
+        rendered = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        audio, sample_rate = sf.read(args.audio, dtype="float32", always_2d=True)
+        if sample_rate != 16_000 or audio.shape[1] != 1:
+            raise ValueError("audio must be 16 kHz mono")
+        prepared_inputs = processor(
+            text=rendered,
+            audio=[audio[:, 0]],
+            max_length=131072,
+            return_tensors="pt",
+        )
+        prompt_ids = prepared_inputs["input_ids"][0].tolist()
+    else:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model,
+            local_files_only=True,
+            use_fast=True,
+        )
+        prompt_ids = tokenizer.encode(qwen_chat_prompt(user_prompt), add_special_tokens=False)
     reference_ids = tokenizer.encode(reference, add_special_tokens=False)
+
+    if args.reference_token_ids_output:
+        args.reference_token_ids_output.parent.mkdir(parents=True, exist_ok=True)
+        args.reference_token_ids_output.write_text(
+            " ".join(str(value) for value in reference_ids) + "\n", encoding="utf-8"
+        )
 
     if args.token_ids_output:
         args.token_ids_output.parent.mkdir(parents=True, exist_ok=True)
@@ -136,8 +175,9 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         local_files_only=True,
+        trust_remote_code=args.audio is not None,
         torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa",
+        attn_implementation="eager" if args.audio is not None else "sdpa",
     )
     model.eval()
 
@@ -155,10 +195,20 @@ def main() -> None:
         torch.inference_mode(),
     ):
         prefill_start = time.perf_counter()
-        result = model(
-            input_ids=torch.tensor([prompt_ids], dtype=torch.long),
-            use_cache=True,
-        )
+        if prepared_inputs is None:
+            result = model(
+                input_ids=torch.tensor([prompt_ids], dtype=torch.long),
+                use_cache=True,
+            )
+        else:
+            result = model(
+                input_ids=prepared_inputs["input_ids"],
+                attention_mask=prepared_inputs["attention_mask"],
+                input_features=prepared_inputs["input_features"].to(torch.bfloat16),
+                audio_feature_lengths=prepared_inputs["audio_feature_lengths"],
+                audio_chunk_mapping=prepared_inputs["audio_chunk_mapping"],
+                use_cache=True,
+            )
         cache = result.past_key_values
         prefill_ms = round((time.perf_counter() - prefill_start) * 1000)
 
@@ -177,7 +227,11 @@ def main() -> None:
             "prompt_ids": prompt_ids,
             "reference_ids": reference_ids,
             "steps": steps,
-            "vocab_size": model.config.vocab_size,
+            "vocab_size": getattr(
+                model.config,
+                "vocab_size",
+                getattr(model.config, "text_config", model.config).vocab_size,
+            ),
             "top_k": args.top_k,
             "prefill_ms": prefill_ms,
         }
@@ -239,6 +293,7 @@ def main() -> None:
                 f"top1={int(top_indices[0])} target={target_token}",
                 flush=True,
             )
+        metadata.write(json.dumps({"type": "footer", "steps_written": steps}) + "\n")
 
 
 if __name__ == "__main__":

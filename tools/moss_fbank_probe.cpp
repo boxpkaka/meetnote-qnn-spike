@@ -1,12 +1,17 @@
 #include <audio/audio.hpp>
 
 #include <fstream>
+#include <string>
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
+    if (argc != 3 && argc != 4) {
         return 2;
     }
-    auto loaded = MNN::AUDIO::load(argv[1], 16000, 0, 30 * 16000);
+    int frameOffset = argc == 4 ? std::stoi(argv[3]) : 0;
+    if (frameOffset < 0) {
+        return 2;
+    }
+    auto loaded = MNN::AUDIO::load(argv[1], 16000, frameOffset, 30 * 16000);
     if (loaded.first == nullptr || loaded.second != 16000) {
         return 3;
     }
