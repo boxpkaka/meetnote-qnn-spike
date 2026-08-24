@@ -17,8 +17,23 @@ MNN_CPU_PREFIX="$(cd "$(dirname "$7")" && pwd)/$(basename "$7")"
 OUTPUT_DIR="$8"
 ADB_BIN="${ADB:-adb}"
 TEACHER_STEPS="${TEACHER_STEPS:-48}"
+FREEGEN_STEPS="${MOSS_TEACHER_FREEGEN_STEPS:-0}"
+START_STEP="${MOSS_TEACHER_START_STEP:-0}"
+SAMPLE_INTERVAL="${MOSS_TEACHER_SAMPLE_INTERVAL:-1}"
 [[ "$TEACHER_STEPS" =~ ^[1-9][0-9]*$ ]] || {
   echo "ERROR: TEACHER_STEPS must be a positive integer" >&2
+  exit 2
+}
+[[ "$FREEGEN_STEPS" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: MOSS_TEACHER_FREEGEN_STEPS must be a non-negative integer" >&2
+  exit 2
+}
+[[ "$START_STEP" =~ ^[0-9]+$ && "$START_STEP" -lt "$TEACHER_STEPS" ]] || {
+  echo "ERROR: MOSS_TEACHER_START_STEP must be a non-negative integer smaller than TEACHER_STEPS" >&2
+  exit 2
+}
+[[ "$SAMPLE_INTERVAL" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ERROR: MOSS_TEACHER_SAMPLE_INTERVAL must be a positive integer" >&2
   exit 2
 }
 
@@ -58,18 +73,47 @@ set +e
 $ADB_BIN shell "cd '$DEVICE_DIR' && chmod 755 moss_teacher_forced_runner && \
   export LD_LIBRARY_PATH='$DEVICE_DIR/lib' && \
   export ADSP_LIBRARY_PATH='$DEVICE_DIR/dsp;/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp' && \
+  export MOSS_TEACHER_FREEGEN_STEPS='$FREEGEN_STEPS' && \
+  export MOSS_TEACHER_START_STEP='$START_STEP' && \
+  export MOSS_TEACHER_SAMPLE_INTERVAL='$SAMPLE_INTERVAL' && \
   ./moss_teacher_forced_runner config.json teacher-prompt.txt teacher-reference-ids.txt teacher-qnn \
     '$TEACHER_STEPS' 20 4 -1 teacher-token-ids.json teacher-input.wav" \
   2>&1 | tee "$OUTPUT_DIR/run.log"
 RUN_STATUS="${PIPESTATUS[0]}"
 set -e
 
-for suffix in jsonl f32; do
-  $ADB_BIN pull "$DEVICE_DIR/teacher-qnn.$suffix" "$OUTPUT_DIR/teacher-qnn.$suffix" >/dev/null 2>&1 || true
-done
-$ADB_BIN pull "$DEVICE_DIR/teacher-token-ids.json" "$OUTPUT_DIR/teacher-token-ids.json" >/dev/null 2>&1 || true
+pull_artifact() {
+  local source="$1"
+  local destination="$2"
+  if ! $ADB_BIN pull "$source" "$destination" >/dev/null 2>&1 || [[ ! -s "$destination" ]]; then
+    echo "ERROR: failed to preserve device artifact: $source" >&2
+    return 1
+  fi
+}
 
 if [[ "$RUN_STATUS" -eq 0 ]]; then
+  PULL_STATUS=0
+  pull_artifact "$DEVICE_DIR/teacher-token-ids.json" \
+    "$OUTPUT_DIR/teacher-token-ids.json" || PULL_STATUS=1
+  if [[ "$FREEGEN_STEPS" != 0 ]]; then
+    pull_artifact "$DEVICE_DIR/teacher-qnn.freegen.json" \
+      "$OUTPUT_DIR/teacher-qnn.freegen.json" || PULL_STATUS=1
+  else
+    for suffix in jsonl f32; do
+      pull_artifact "$DEVICE_DIR/teacher-qnn.$suffix" \
+        "$OUTPUT_DIR/teacher-qnn.$suffix" || PULL_STATUS=1
+    done
+  fi
+  if [[ "$PULL_STATUS" -ne 0 ]]; then
+    RUN_STATUS=1
+  fi
+else
+  for artifact in teacher-token-ids.json teacher-qnn.jsonl teacher-qnn.f32 teacher-qnn.freegen.json; do
+    $ADB_BIN pull "$DEVICE_DIR/$artifact" "$OUTPUT_DIR/$artifact" >/dev/null 2>&1 || true
+  done
+fi
+
+if [[ "$RUN_STATUS" -eq 0 && "$FREEGEN_STEPS" == 0 ]]; then
   python3 "$SCRIPT_DIR/compare_token_ids.py" \
     --hf "$HF_TOKEN_IDS" --mnn "$OUTPUT_DIR/teacher-token-ids.json" \
     > "$OUTPUT_DIR/token-alignment.json"

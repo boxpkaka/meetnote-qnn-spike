@@ -56,6 +56,7 @@ def verify(root: Path) -> dict[str, object]:
         "prompt-contract/960000.json",
         "prompt-contract/1440000.json",
         "prompt-contract/1920000.json",
+        "prompt-contract/4800000.json",
     }
     missing = required - actual
     if missing:

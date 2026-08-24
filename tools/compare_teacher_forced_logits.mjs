@@ -20,6 +20,9 @@ function readProbe(prefix) {
   ) {
     throw new Error(`invalid probe metadata: ${prefix}`);
   }
+  if (steps.some((record, index) => index > 0 && record.step <= steps[index - 1].step)) {
+    throw new Error(`probe steps are not strictly increasing: ${prefix}`);
+  }
   const logits = fs.readFileSync(`${prefix}.f32`);
   const expectedBytes = header.steps * header.vocab_size * 4;
   if (logits.length !== expectedBytes) {
@@ -38,7 +41,9 @@ function valueAt(probe, step, token) {
 function compare(cpu, qnn) {
   if (
     cpu.header.steps !== qnn.header.steps ||
-    cpu.header.vocab_size !== qnn.header.vocab_size
+    cpu.header.vocab_size !== qnn.header.vocab_size ||
+    (cpu.header.start_step ?? 0) !== (qnn.header.start_step ?? 0) ||
+    cpu.steps.some((record, index) => record.step !== qnn.steps[index].step)
   ) {
     throw new Error("probe dimensions differ");
   }
@@ -87,7 +92,7 @@ function compare(cpu, qnn) {
     const qnnTop = new Set(qnn.steps[step].top.map((entry) => entry.token));
     const topKOverlap = [...cpuTop].filter((token) => qnnTop.has(token)).length;
     stepResults.push({
-      step,
+      step: cpu.steps[step].step,
       input_piece: cpu.steps[step].input_piece,
       target_piece: cpu.steps[step].target_piece,
       target_token: cpu.steps[step].target_token,

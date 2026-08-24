@@ -7,10 +7,12 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <numeric>
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "llm/llm.hpp"
@@ -144,9 +146,10 @@ int parseLayer(const std::string& name) {
 
 class BoundaryTraceWriter {
 public:
-    explicit BoundaryTraceWriter(const std::string& prefix)
+    BoundaryTraceWriter(const std::string& prefix, bool repeatLayer0Only = false)
         : metadata_(prefix + ".layers.jsonl", std::ios::out | std::ios::trunc),
-          tensors_(prefix + ".layers.f32", std::ios::out | std::ios::binary | std::ios::trunc) {
+          tensors_(prefix + ".layers.f32", std::ios::out | std::ios::binary | std::ios::trunc),
+          repeatLayer0Only_(repeatLayer0Only) {
     }
 
     bool isOpen() const {
@@ -158,6 +161,64 @@ public:
             return true;
         }
         const std::string& name = info->name();
+        const std::pair<const char*, int> qnnDebugOutputs[] = {
+            {"deq/graph0.bin", 0},
+            {"deq/graph8.bin", 7},
+            {"deq/graph9.bin", 8},
+            {"deq/graph10.bin", 9},
+            {"deq/graph11.bin", 10},
+            {"deq/graph12.bin", 11},
+            {"deq/graph13.bin", 12},
+            {"deq/graph14.bin", 13},
+            {"deq/graph15.bin", 14},
+            {"deq/graph16.bin", 15},
+            {"deq/graph24.bin", 23},
+            {"deq/graph28.bin", 27},
+        };
+        if (outputs.size() >= 5) {
+            for (const auto& candidate : qnnDebugOutputs) {
+                if (endsWith(name, candidate.first)) {
+                    currentLayer_ = candidate.second;
+                    if (candidate.second >= 8 && candidate.second <= 15) {
+                        const bool hidden = write(
+                                "hidden", candidate.second, name, outputs[0]);
+                        const bool attnQ = write(
+                                "attn_q", candidate.second, name, outputs[1]);
+                        const bool attnK = write(
+                                "attn_k", candidate.second, name, outputs[2]);
+                        const bool attnV = write(
+                                "attn_v", candidate.second, name, outputs[3]);
+                        const bool qProj = write(
+                                "q_proj", candidate.second, name, outputs.back());
+                        return hidden && attnQ && attnK && attnV && qProj;
+                    }
+                    return write("q_proj", candidate.second, name, outputs.back());
+                }
+            }
+        }
+        if (outputs.size() >= 5 && endsWith(name, "deq/graph1.bin")) {
+            currentLayer_ = 0;
+            const bool attnQ = write("attn_q", 0, name, outputs[2]);
+            const bool attnK = write("attn_k", 0, name, outputs[3]);
+            const bool attnV = write("attn_v", 0, name, outputs[4]);
+            return attnQ && attnK && attnV;
+        }
+        if (outputs.size() == 4) {
+            for (int graph = 2; graph <= 28; ++graph) {
+                const std::string suffix =
+                        "deq/graph" + std::to_string(graph) + ".bin";
+                if (!endsWith(name, suffix)) {
+                    continue;
+                }
+                const int qnnLayer = graph - 1;
+                currentLayer_ = qnnLayer;
+                const bool hidden = write("hidden", qnnLayer, name, outputs[0]);
+                const bool attnQ = write("attn_q", qnnLayer, name, outputs[1]);
+                const bool attnK = write("attn_k", qnnLayer, name, outputs[2]);
+                const bool attnV = write("attn_v", qnnLayer, name, outputs[3]);
+                return hidden && attnQ && attnK && attnV;
+            }
+        }
         const int layer = parseLayer(name);
         if (layer >= 0) {
             currentLayer_ = layer;
@@ -190,6 +251,9 @@ public:
         }
         if (endsWith(name, "/self_attn/Reshape_2_output_0")) {
             return write("attn_v", effectiveLayer, name, outputs[0]);
+        }
+        if (endsWith(name, "/self_attn/FusedAttention")) {
+            return write("attn_out", effectiveLayer, name, outputs[0]);
         }
         if (endsWith(name, "/self_attn/q_proj/FakeLinear_output_0") ||
             endsWith(name, "/self_attn/q_proj/Linear/post_reshape") ||
@@ -241,8 +305,18 @@ private:
             const std::string& opName,
             MNN::Tensor* deviceTensor) {
         const std::string key = std::to_string(layer) + ":" + kind;
-        if (!captured_.insert(key).second) {
-            return true;
+        int occurrence = 0;
+        if (repeatLayer0Only_) {
+            const std::string kindName(kind);
+            if (layer != 0 || (kindName != "attn_q" && kindName != "attn_k" &&
+                              kindName != "attn_v" && kindName != "attn_out")) {
+                return true;
+            }
+            occurrence = occurrences_[key]++;
+        } else {
+            if (!captured_.insert(key).second) {
+                return true;
+            }
         }
         if (deviceTensor == nullptr || deviceTensor->elementSize() <= 0) {
             return false;
@@ -262,7 +336,8 @@ private:
         metadata_ << "{\"kind\":\"" << kind
                   << "\",\"layer\":" << layer
                   << ",\"op\":\"" << escapeJson(opName)
-                  << "\",\"offset_floats\":" << offsetFloats_
+                  << "\",\"occurrence\":" << occurrence
+                  << ",\"offset_floats\":" << offsetFloats_
                   << ",\"elements\":" << elements
                   << ",\"shape\":[";
         for (int dimension = 0; dimension < hostTensor->dimensions(); ++dimension) {
@@ -286,6 +361,8 @@ private:
     int records_ = 0;
     int currentLayer_ = -1;
     std::set<std::string> captured_;
+    std::map<std::string, int> occurrences_;
+    bool repeatLayer0Only_ = false;
 };
 
 void writeStep(
@@ -389,7 +466,22 @@ int main(int argc, const char* argv[]) {
     const int traceStep = argc >= 9 ? std::stoi(argv[8]) : -1;
     const std::string tokenIdsOutput = argc >= 10 ? argv[9] : "";
     const std::string mossWav = argc >= 11 ? argv[10] : "";
-    if (maxSteps < 0 || topK < 0 || threads < 0) {
+    const char* freegenStepsEnv = std::getenv("MOSS_TEACHER_FREEGEN_STEPS");
+    const int freegenSteps = freegenStepsEnv == nullptr
+            ? 0
+            : parseNonNegativeInt(freegenStepsEnv, "MOSS_TEACHER_FREEGEN_STEPS");
+    const char* startStepEnv = std::getenv("MOSS_TEACHER_START_STEP");
+    const int startStep = startStepEnv == nullptr
+            ? 0
+            : parseNonNegativeInt(startStepEnv, "MOSS_TEACHER_START_STEP");
+    const char* sampleIntervalEnv = std::getenv("MOSS_TEACHER_SAMPLE_INTERVAL");
+    const int sampleInterval = sampleIntervalEnv == nullptr
+            ? 1
+            : parsePositiveInt(sampleIntervalEnv, "MOSS_TEACHER_SAMPLE_INTERVAL");
+    const bool prefillLayer0Trace =
+            std::getenv("MOSS_TEACHER_TRACE_PREFILL_LAYER0") != nullptr;
+    if (maxSteps < 0 || topK < 0 || threads < 0 || freegenSteps < 0 || startStep < 0 ||
+        sampleInterval < 0) {
         return 2;
     }
     if (maxSteps == 0 && tokenIdsOutput.empty()) {
@@ -430,7 +522,7 @@ int main(int argc, const char* argv[]) {
     bool traceActive = false;
     std::ostringstream config;
     config << "{\"async\":false,\"enable_debug\":"
-           << (traceStep >= 0 ? "true" : "false")
+           << (traceStep >= 0 || prefillLayer0Trace ? "true" : "false")
            << ",\"backend_type\":\"cpu\",\"thread_num\":" << threads;
     if (!hiddenPrefix.empty()) {
         config << ",\"hidden_states\":true";
@@ -441,8 +533,8 @@ int main(int argc, const char* argv[]) {
     config << "}";
     llm->set_config(config.str());
     llm->set_config("{\"tmp_path\":\"/tmp/meetnote-mnn-teacher\"}");
-    if (traceStep >= 0) {
-        boundaryTrace.reset(new BoundaryTraceWriter(prefix));
+    if (traceStep >= 0 || prefillLayer0Trace) {
+        boundaryTrace.reset(new BoundaryTraceWriter(prefix, prefillLayer0Trace));
         if (!boundaryTrace->isOpen()) {
             std::cerr << "failed to open boundary trace files\n";
             return 1;
@@ -494,6 +586,42 @@ int main(int argc, const char* argv[]) {
         std::cerr << "failed to write token IDs: " << tokenIdsOutput << "\n";
         return 1;
     }
+    if (freegenSteps > 0) {
+        const std::vector<int> outputIds = llm->generate(inputIds, freegenSteps);
+        LlmContext* context = const_cast<LlmContext*>(llm->getContext());
+        if (context->status == LlmStatus::INTERNAL_ERROR) {
+            std::cerr << "free generation failed\n";
+            return 1;
+        }
+        std::ofstream freegenOutput(
+                prefix + ".freegen.json", std::ios::out | std::ios::trunc);
+        if (!freegenOutput.is_open()) {
+            std::cerr << "failed to open free-generation output file\n";
+            return 1;
+        }
+        freegenOutput << "{\"format\":\"meetnote.freegen_tokens.v1\""
+                      << ",\"prompt_tokens\":" << inputIds.size()
+                      << ",\"requested_tokens\":" << freegenSteps
+                      << ",\"token_ids\":";
+        writeJsonIntArray(freegenOutput, outputIds);
+        freegenOutput << ",\"pieces\":[";
+        for (size_t index = 0; index < outputIds.size(); ++index) {
+            if (index > 0) {
+                freegenOutput << ",";
+            }
+            freegenOutput << "\""
+                          << escapeJson(llm->tokenizer_decode(outputIds[index]))
+                          << "\"";
+        }
+        freegenOutput << "]}\n";
+        if (!freegenOutput.good()) {
+            std::cerr << "failed while writing free-generation tokens\n";
+            return 1;
+        }
+        std::cout << "prompt_tokens=" << inputIds.size()
+                  << " freegen_tokens=" << outputIds.size() << "\n";
+        return 0;
+    }
     if (maxSteps == 0) {
         std::cout << "token IDs written to " << tokenIdsOutput << "\n";
         return 0;
@@ -503,7 +631,13 @@ int main(int argc, const char* argv[]) {
         return 2;
     }
 
+    if (prefillLayer0Trace) {
+        traceActive = true;
+    }
     llm->generate(inputIds, 0);
+    if (prefillLayer0Trace) {
+        traceActive = false;
+    }
     LlmContext* context = const_cast<LlmContext*>(llm->getContext());
     if (context->status == LlmStatus::INTERNAL_ERROR) {
         std::cerr << "prefill failed\n";
@@ -511,6 +645,14 @@ int main(int argc, const char* argv[]) {
     }
 
     const int steps = std::min(static_cast<int>(referenceIds.size()) - 1, maxSteps);
+    if (startStep >= steps) {
+        std::cerr << "MOSS_TEACHER_START_STEP must be less than executed steps\n";
+        return 2;
+    }
+    const int lastStep = steps - 1;
+    const int regularSamples = (lastStep - startStep) / sampleInterval + 1;
+    const bool lastStepIsRegular = (lastStep - startStep) % sampleInterval == 0;
+    const int writtenSteps = regularSamples + (lastStepIsRegular ? 0 : 1);
     int vocabSize = 0;
     for (int step = 0; step < steps; ++step) {
         const int inputToken = referenceIds[step];
@@ -549,6 +691,16 @@ int main(int argc, const char* argv[]) {
         }
         values += info->size - vocabSize;
 
+        const bool selectedStep = step >= startStep &&
+                ((step - startStep) % sampleInterval == 0 || step == lastStep);
+        if (!selectedStep) {
+            if ((step + 1) % 100 == 0 || step + 1 == startStep) {
+                std::cerr << "warmup step " << (step + 1) << "/" << startStep
+                          << " forward_ms=" << forwardMs << "\n";
+            }
+            continue;
+        }
+
         if (!hiddenPrefix.empty()) {
             auto outputs = llm->getOutputs();
             int hiddenIndex = llm->getOutputIndex("hidden_states");
@@ -580,7 +732,7 @@ int main(int argc, const char* argv[]) {
             }
         }
 
-        if (step == 0) {
+        if (step == startStep) {
             metadata << "{\"type\":\"header\""
                      << ",\"format\":\"meetnote.teacher_logits.v1\""
                      << ",\"dtype\":\"float32_le\""
@@ -590,7 +742,10 @@ int main(int argc, const char* argv[]) {
             writeJsonIntArray(metadata, inputIds);
             metadata << ",\"reference_ids\":";
             writeJsonIntArray(metadata, referenceIds);
-            metadata << ",\"steps\":" << steps
+            metadata << ",\"start_step\":" << startStep
+                     << ",\"steps\":" << writtenSteps
+                     << ",\"total_steps_executed\":" << steps
+                     << ",\"sample_interval\":" << sampleInterval
                      << ",\"vocab_size\":" << vocabSize
                      << ",\"top_k\":" << topK
                      << "}\n";
@@ -616,7 +771,7 @@ int main(int argc, const char* argv[]) {
                   << " forward_ms=" << forwardMs << "\n";
     }
 
-    metadata << "{\"type\":\"footer\",\"steps_written\":" << steps << "}\n";
+    metadata << "{\"type\":\"footer\",\"steps_written\":" << writtenSteps << "}\n";
     if (boundaryTrace != nullptr && !boundaryTrace->good()) {
         std::cerr << "boundary trace did not capture all expected tensors\n";
         return 1;
@@ -624,6 +779,9 @@ int main(int argc, const char* argv[]) {
     std::cout << "prompt_tokens=" << inputIds.size()
               << " reference_tokens=" << referenceIds.size()
               << " steps=" << steps
+              << " start_step=" << startStep
+              << " steps_written=" << writtenSteps
+              << " sample_interval=" << sampleInterval
               << " vocab_size=" << vocabSize << "\n";
     return 0;
 }

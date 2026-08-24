@@ -19,18 +19,20 @@ command -v "$ADB_BIN" >/dev/null || { echo "ERROR: adb is required" >&2; exit 1;
 [[ -x "$RELEASE_DIR/moss_qnn_runner" ]] || { echo "ERROR: Android runner is missing" >&2; exit 1; }
 [[ -f "$RELEASE_DIR/artifact-manifest.json" ]] || { echo "ERROR: artifact manifest is missing" >&2; exit 1; }
 [[ -f "$INPUT_WAV" ]] || { echo "ERROR: input WAV is missing" >&2; exit 1; }
-if [[ -z "$PROMPT_CONTRACT" && -d "$RELEASE_DIR/prompt-contract" ]]; then
+if [[ -z "$PROMPT_CONTRACT" ]]; then
+  [[ -d "$RELEASE_DIR/prompt-contract" ]] || {
+    echo "ERROR: release prompt-contract directory is missing" >&2
+    exit 1
+  }
   SAMPLE_COUNT="$(python3 - "$INPUT_WAV" <<'PY'
 import sys, wave
 with wave.open(sys.argv[1], "rb") as wav:
     print(wav.getnframes())
 PY
 )"
-  if [[ -f "$RELEASE_DIR/prompt-contract/$SAMPLE_COUNT.json" ]]; then
-    PROMPT_CONTRACT="$RELEASE_DIR/prompt-contract/$SAMPLE_COUNT.json"
-  fi
+  PROMPT_CONTRACT="$RELEASE_DIR/prompt-contract/$SAMPLE_COUNT.json"
 fi
-[[ -z "$PROMPT_CONTRACT" || -f "$PROMPT_CONTRACT" ]] || {
+[[ -f "$PROMPT_CONTRACT" ]] || {
   echo "ERROR: prompt contract report is missing: $PROMPT_CONTRACT" >&2
   exit 1
 }
@@ -64,9 +66,11 @@ run_device() {
   ./moss_qnn_runner config.json input.wav $HOTWORDS_QUOTED"
 }
 
+TEMP_EVIDENCE_ROOT=""
 if [[ -z "$EVIDENCE_DIR" ]]; then
-  run_device
-  exit $?
+  TEMP_EVIDENCE_ROOT="$(mktemp -d)"
+  EVIDENCE_DIR="$TEMP_EVIDENCE_ROOT/run"
+  trap 'rm -rf "$TEMP_EVIDENCE_ROOT"' EXIT
 fi
 [[ ! -e "$EVIDENCE_DIR" ]] || { echo "ERROR: evidence directory already exists: $EVIDENCE_DIR" >&2; exit 1; }
 mkdir -p "$EVIDENCE_DIR"
@@ -79,7 +83,7 @@ python3 "$SCRIPT_DIR/record_moss_run_evidence.py" \
   --run-log "$EVIDENCE_DIR/run.log" --output-dir "$EVIDENCE_DIR" \
   --exit-code "$RUN_STATUS" --device-model "$DEVICE_MODEL" \
   --soc-model "$SOC_MODEL" --android-version "$ANDROID_VERSION"
-if [[ -n "$PROMPT_CONTRACT" && -f "$EVIDENCE_DIR/result.json" ]]; then
+if [[ -f "$EVIDENCE_DIR/result.json" ]]; then
   set +e
   python3 "$SCRIPT_DIR/verify_moss_device_prompt.py" \
     --result "$EVIDENCE_DIR/result.json" --contract "$PROMPT_CONTRACT" \
@@ -89,10 +93,13 @@ if [[ -n "$PROMPT_CONTRACT" && -f "$EVIDENCE_DIR/result.json" ]]; then
   if [[ "$RUN_STATUS" -eq 0 && "$PROMPT_STATUS" -ne 0 ]]; then
     RUN_STATUS="$PROMPT_STATUS"
   fi
-  python3 "$SCRIPT_DIR/record_moss_run_evidence.py" \
-    --release "$RELEASE_DIR" --input-wav "$INPUT_WAV" \
-    --run-log "$EVIDENCE_DIR/run.log" --output-dir "$EVIDENCE_DIR" \
-    --exit-code "$RUN_STATUS" --device-model "$DEVICE_MODEL" \
-    --soc-model "$SOC_MODEL" --android-version "$ANDROID_VERSION" >/dev/null
+elif [[ "$RUN_STATUS" -eq 0 ]]; then
+  echo "ERROR: runner succeeded without a result JSON" >&2
+  RUN_STATUS=1
 fi
+python3 "$SCRIPT_DIR/record_moss_run_evidence.py" \
+  --release "$RELEASE_DIR" --input-wav "$INPUT_WAV" \
+  --run-log "$EVIDENCE_DIR/run.log" --output-dir "$EVIDENCE_DIR" \
+  --exit-code "$RUN_STATUS" --device-model "$DEVICE_MODEL" \
+  --soc-model "$SOC_MODEL" --android-version "$ANDROID_VERSION" >/dev/null
 exit "$RUN_STATUS"

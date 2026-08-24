@@ -189,14 +189,14 @@ PROMPT_PROBE="$WORK_DIR/moss_tokenizer_probe"
 MNN_ROOT="$MNN_ROOT" OUTPUT="$PROMPT_PROBE" "$SCRIPT_DIR/build_moss_tokenizer_probe.sh"
 mkdir -p "$WORK_DIR/prompt-contract"
 PROMPT_REPORTS=()
-for samples in 480000 960000 1440000 1920000; do
+for samples in 480000 960000 1440000 1920000 4800000; do
   report="$WORK_DIR/prompt-contract/$samples.json"
   "$PROMPT_PROBE" "$EXPORT_DIR/tokenizer.mtok" "$samples" > "$report"
   PROMPT_REPORTS+=("$report")
 done
 "$PYTHON_BIN" "$SCRIPT_DIR/verify_moss_audio_token_contract.py" \
   --model-dir "$MODEL_DIR" --llm-config "$EXPORT_DIR/llm_config.json" \
-  --durations 30 60 90 120 --full-prompt-reports "${PROMPT_REPORTS[@]}" \
+  --durations 30 60 90 120 300 --full-prompt-reports "${PROMPT_REPORTS[@]}" \
   > "$WORK_DIR/logs/audio-token-contract.json"
 if (( DECODER_ACT_BIT < 16 )); then
   "$PYTHON_BIN" "$SCRIPT_DIR/widen_mnn_logits.py" \
@@ -211,6 +211,8 @@ CPU_GENERATOR="$REPO_ROOT/experiments/ablation/generate_qnn_with_cpu_ops.py"
 COMMON=(--mnn_path "$MNN_BUILD_DIR" --soc_id 87 --dsp_arch v81 --chunk_size 64 --max_history_token "$MAX_HISTORY_TOKEN" --need_config_json true)
 CPU_OPS=(
   --cpu-op /Slice_output_0
+  --cpu-op /rotary/Cast_output_0
+  --cpu-op /rotary/Reshape_output_0
   --cpu-op /rotary/Mul_output_0
   --cpu-op /rotary/Cos_output_0
   --cpu-op /rotary/Sin_output_0

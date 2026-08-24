@@ -165,7 +165,7 @@ class MossRuntimePayloadTest(unittest.TestCase):
             (output / "moss_qnn_runner").write_bytes(b"runner")
             prompt_contract = output / "prompt-contract"
             prompt_contract.mkdir()
-            for samples in (480000, 960000, 1440000, 1920000):
+            for samples in (480000, 960000, 1440000, 1920000, 4800000):
                 (prompt_contract / f"{samples}.json").write_text("{}", encoding="utf-8")
             manifest = WRITE_MANIFEST.write_manifest(output, 64.0, "27.2.12479018")
             self.assertEqual("low", config["precision"])

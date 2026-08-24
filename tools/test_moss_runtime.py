@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +13,92 @@ import moss_runtime as moss
 
 
 class MossRuntimeTest(unittest.TestCase):
+    def test_qnn_partition_keeps_position_ids_on_cpu_before_rope(self):
+        root = Path(__file__).resolve().parents[1]
+        rebuild = (root / "tools/rebuild_moss_transcribe_diarize_qnn.sh").read_text(
+            encoding="utf-8"
+        )
+        cast = rebuild.index("--cpu-op /rotary/Cast_output_0")
+        reshape = rebuild.index("--cpu-op /rotary/Reshape_output_0")
+        multiply = rebuild.index("--cpu-op /rotary/Mul_output_0")
+        self.assertLess(cast, reshape)
+        self.assertLess(reshape, multiply)
+
+    def test_qnn_cpu_partition_generator_forwards_debug_outputs(self):
+        root = Path(__file__).resolve().parents[1]
+        generator = (
+            root / "experiments/ablation/generate_qnn_with_cpu_ops.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('parser.add_argument("--debug-output"', generator)
+        self.assertIn('config["debug_outputs"] = debug_outputs', generator)
+        self.assertIn("wrapper_args.cpu_op, wrapper_args.debug_output", generator)
+        self.assertIn("args, args.chunk_size, hidden_size, mask_type", generator)
+
+    def test_late_teacher_probe_window_is_forwarded_to_native_runner(self):
+        root = Path(__file__).resolve().parents[1]
+        native = (root / "tools/mnn_teacher_forced_logits.cpp").read_text(
+            encoding="utf-8"
+        )
+        runner = (root / "tools/run_moss_teacher_forced_sm8850.sh").read_text(
+            encoding="utf-8"
+        )
+        comparator = (root / "tools/compare_teacher_forced_logits.mjs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('std::getenv("MOSS_TEACHER_START_STEP")', native)
+        self.assertIn('std::getenv("MOSS_TEACHER_SAMPLE_INTERVAL")', native)
+        self.assertIn('\\"start_step\\"', native)
+        self.assertIn("export MOSS_TEACHER_START_STEP='$START_STEP'", runner)
+        self.assertIn("export MOSS_TEACHER_SAMPLE_INTERVAL='$SAMPLE_INTERVAL'", runner)
+        self.assertIn("header.start_step ?? 0", comparator)
+        self.assertIn('{"deq/graph28.bin", 27}', native)
+        self.assertIn('write("q_proj", candidate.second, name, outputs.back())', native)
+        self.assertIn('"attn_k", candidate.second, name, outputs[2]', native)
+        self.assertIn('write("attn_out", effectiveLayer, name, outputs[0])', native)
+        self.assertIn('endsWith(name, "deq/graph1.bin")', native)
+        self.assertIn('for (int graph = 2; graph <= 28; ++graph)', native)
+        self.assertIn('write("attn_q", qnnLayer, name, outputs[1])', native)
+        self.assertIn('MOSS_TEACHER_TRACE_PREFILL_LAYER0', native)
+        self.assertIn('BoundaryTraceWriter(prefix, prefillLayer0Trace)', native)
+        self.assertIn('occurrences_[key]++', native)
+        self.assertIn('[[ ! -s "$destination" ]]', runner)
+        self.assertIn('RUN_STATUS=1', runner)
+
+    def test_device_runner_always_verifies_prompt_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        runner = (root / "tools/run_moss_sm8850.sh").read_text(encoding="utf-8")
+        self.assertNotIn('if [[ -z "$EVIDENCE_DIR" ]]; then\n  run_device', runner)
+        self.assertIn('TEMP_EVIDENCE_ROOT="$(mktemp -d)"', runner)
+        self.assertIn('runner succeeded without a result JSON', runner)
+        self.assertIn('verify_moss_device_prompt.py', runner)
+
+    def test_native_prompt_matches_reference_fixture_exactly(self):
+        root = Path(__file__).resolve().parents[1]
+        expected = (root / "fixtures/moss/default-transcription-prompt.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(expected.endswith("\n"))
+
+        sources = [
+            root / "tools/moss_tokenizer_probe.cpp",
+            root / "third_party/patches/mnn/0007-add-moss-native-runner.patch",
+        ]
+        for path in sources:
+            source = path.read_text(encoding="utf-8")
+            if path.suffix == ".patch":
+                source = "\n".join(
+                    line[1:] if line.startswith("+") else line
+                    for line in source.splitlines()
+                )
+            match = re.search(
+                r"const char\* kDefaultPrompt\s*=\s*((?:\s*\"(?:\\.|[^\"\\])*\"\s*)+);",
+                source,
+            )
+            self.assertIsNotNone(match, path)
+            literals = re.findall(r'\"(?:\\.|[^\"\\])*\"', match.group(1))
+            actual = "".join(ast.literal_eval(literal) for literal in literals)
+            self.assertEqual(expected, actual, path)
+
     def test_chunk_plan_and_last_chunk_crop(self):
         chunks = moss.plan_audio_chunks(30 * moss.SAMPLE_RATE + 1)
         self.assertEqual([375, 1], [chunk.audio_tokens for chunk in chunks])

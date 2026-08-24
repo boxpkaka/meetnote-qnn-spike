@@ -17,7 +17,7 @@ def load_generator(path):
     return module
 
 
-def make_separate(cpu_ops):
+def make_separate(cpu_ops, debug_outputs):
     def separate(args, model_name, ids):
         executable = os.path.join(os.getcwd(), args.mnn_path, "compilefornpu")
         model = os.path.join(os.getcwd(), args.model, model_name)
@@ -29,6 +29,8 @@ def make_separate(cpu_ops):
             "KVCACHE_SIZE_LIMIT": args.max_history_token,
             "cache": "qnn",
         }
+        if debug_outputs:
+            config["debug_outputs"] = debug_outputs
         cache = os.path.join(os.getcwd(), args.cache_path)
         with open(os.path.join(cache, "qnn.json"), "w", encoding="utf-8") as file:
             json.dump(config, file, indent=4)
@@ -48,16 +50,31 @@ def make_separate(cpu_ops):
     return separate
 
 
+def use_requested_chunk_size(generator):
+    original_make_io_json = generator.makeIOJson
+
+    def make_io_json(args, _seq_len, hidden_size, mask_type):
+        return original_make_io_json(
+            args, args.chunk_size, hidden_size, mask_type
+        )
+
+    generator.makeIOJson = make_io_json
+
+
 def main():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--base-generator", required=True)
     parser.add_argument("--cpu-op", action="append", default=[])
+    parser.add_argument("--debug-output", action="append", default=[])
     wrapper_args, generator_args = parser.parse_known_args()
     if not wrapper_args.cpu_op:
         parser.error("at least one --cpu-op is required")
 
     generator = load_generator(wrapper_args.base_generator)
-    generator.seperate = make_separate(wrapper_args.cpu_op)
+    use_requested_chunk_size(generator)
+    generator.seperate = make_separate(
+        wrapper_args.cpu_op, wrapper_args.debug_output
+    )
     sys.argv = [sys.argv[0], *generator_args]
     generator.main()
 

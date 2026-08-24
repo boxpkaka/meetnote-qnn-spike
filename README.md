@@ -204,9 +204,10 @@ acceptance WAV for boundary regression.
 Build `tools/moss_tokenizer_probe.cpp` with `tools/build_moss_tokenizer_probe.sh` against the same
 patched MNN checkout to compare complete official/runtime prompt IDs before device execution. Set
 `MOSS_EVIDENCE_DIR` when invoking `tools/run_moss_sm8850.sh` to preserve the run log, result JSON,
-device properties, and SHA-256 records even when the native runner fails. Set
-The rebuild embeds 30/60/90/120-second reports under `prompt-contract/`; the device script selects one
-automatically by WAV sample count, fails on a prompt-ID mismatch, and saves `prompt-alignment.json`.
+device properties, and SHA-256 records even when the native runner fails.
+The rebuild embeds 30/60/90/120/300-second reports under `prompt-contract/`; the device script selects one
+automatically by WAV sample count, fails closed when that exact contract is absent or prompt IDs differ, and saves
+`prompt-alignment.json`.
 `MOSS_PROMPT_CONTRACT` can still override the selected report.
 
 ## Repository Checks
