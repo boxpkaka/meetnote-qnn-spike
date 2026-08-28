@@ -1,0 +1,275 @@
+diff --git a/include/MNN/LLMProfile.h b/include/MNN/LLMProfile.h
+index 472fbd7..f457026 100644
+--- a/include/MNN/LLMProfile.h
++++ b/include/MNN/LLMProfile.h
+@@ -18,10 +18,15 @@ namespace MNN {
+ enum class LLMProfileCategory : int {
+     CPUAttention = 0,
+     CPUAttentionKVUpdate = 1,
+-    QNNInputCopy = 2,
+-    QNNExecuteSync = 3,
+-    QNNOutputCopy = 4,
+-    QNNStateUpdate = 5,
++    CPUAttentionQPack = 2,
++    CPUAttentionQK = 3,
++    CPUAttentionSoftmax = 4,
++    CPUAttentionQKV = 5,
++    CPUAttentionOutput = 6,
++    QNNInputCopy = 7,
++    QNNExecuteSync = 8,
++    QNNOutputCopy = 9,
++    QNNStateUpdate = 10,
+ };
+ 
+ struct LLMProfileBucket {
+@@ -30,6 +35,11 @@ struct LLMProfileBucket {
+     uint64_t cpuAttentionCalls = 0;
+     uint64_t cpuAttentionNs = 0;
+     uint64_t cpuAttentionKVUpdateNs = 0;
++    uint64_t cpuAttentionQPackNs = 0;
++    uint64_t cpuAttentionQKNs = 0;
++    uint64_t cpuAttentionSoftmaxNs = 0;
++    uint64_t cpuAttentionQKVNs = 0;
++    uint64_t cpuAttentionOutputNs = 0;
+     uint64_t qnnGraphCalls = 0;
+     uint64_t qnnInputCopyNs = 0;
+     uint64_t qnnExecuteSyncNs = 0;
+diff --git a/source/backend/cpu/CPUAttention.cpp b/source/backend/cpu/CPUAttention.cpp
+index 8db539a..bf67235 100644
+--- a/source/backend/cpu/CPUAttention.cpp
++++ b/source/backend/cpu/CPUAttention.cpp
+@@ -12,6 +12,7 @@
+ #include <atomic>
+ #include <chrono>
+ #include <limits>
++#include <vector>
+ #include <MNN/LLMProfile.h>
+ #include "CPUAttention.hpp"
+ #include "CPUBackend.hpp"
+@@ -42,6 +43,11 @@ struct AtomicLLMProfileBucket {
+     std::atomic<uint64_t> cpuAttentionCalls{0};
+     std::atomic<uint64_t> cpuAttentionNs{0};
+     std::atomic<uint64_t> cpuAttentionKVUpdateNs{0};
++    std::atomic<uint64_t> cpuAttentionQPackNs{0};
++    std::atomic<uint64_t> cpuAttentionQKNs{0};
++    std::atomic<uint64_t> cpuAttentionSoftmaxNs{0};
++    std::atomic<uint64_t> cpuAttentionQKVNs{0};
++    std::atomic<uint64_t> cpuAttentionOutputNs{0};
+     std::atomic<uint64_t> qnnGraphCalls{0};
+     std::atomic<uint64_t> qnnInputCopyNs{0};
+     std::atomic<uint64_t> qnnExecuteSyncNs{0};
+@@ -49,6 +55,14 @@ struct AtomicLLMProfileBucket {
+     std::atomic<uint64_t> qnnStateUpdateNs{0};
+ };
+ 
++struct CPUAttentionPhaseDurations {
++    uint64_t qPackNs = 0;
++    uint64_t qkNs = 0;
++    uint64_t softmaxNs = 0;
++    uint64_t qkvNs = 0;
++    uint64_t outputNs = 0;
++};
++
+ std::atomic<bool> gLLMProfileEnabled{false};
+ std::array<AtomicLLMProfileBucket, kProfileBucketCount> gLLMProfileBuckets;
+ 
+@@ -107,6 +121,11 @@ void resetLLMProfile() {
+         bucket.cpuAttentionCalls.store(0, std::memory_order_relaxed);
+         bucket.cpuAttentionNs.store(0, std::memory_order_relaxed);
+         bucket.cpuAttentionKVUpdateNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionQPackNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionQKNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionSoftmaxNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionQKVNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionOutputNs.store(0, std::memory_order_relaxed);
+         bucket.qnnGraphCalls.store(0, std::memory_order_relaxed);
+         bucket.qnnInputCopyNs.store(0, std::memory_order_relaxed);
+         bucket.qnnExecuteSyncNs.store(0, std::memory_order_relaxed);
+@@ -128,6 +147,21 @@ void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t d
+         case LLMProfileCategory::CPUAttentionKVUpdate:
+             bucket.cpuAttentionKVUpdateNs.fetch_add(durationNs, std::memory_order_relaxed);
+             break;
++        case LLMProfileCategory::CPUAttentionQPack:
++            bucket.cpuAttentionQPackNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::CPUAttentionQK:
++            bucket.cpuAttentionQKNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::CPUAttentionSoftmax:
++            bucket.cpuAttentionSoftmaxNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::CPUAttentionQKV:
++            bucket.cpuAttentionQKVNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::CPUAttentionOutput:
++            bucket.cpuAttentionOutputNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
+         case LLMProfileCategory::QNNInputCopy:
+             bucket.qnnInputCopyNs.fetch_add(durationNs, std::memory_order_relaxed);
+             break;
+@@ -160,6 +194,11 @@ size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity) {
+         destination.cpuAttentionCalls = source.cpuAttentionCalls.load(std::memory_order_relaxed);
+         destination.cpuAttentionNs = source.cpuAttentionNs.load(std::memory_order_relaxed);
+         destination.cpuAttentionKVUpdateNs = source.cpuAttentionKVUpdateNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionQPackNs = source.cpuAttentionQPackNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionQKNs = source.cpuAttentionQKNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionSoftmaxNs = source.cpuAttentionSoftmaxNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionQKVNs = source.cpuAttentionQKVNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionOutputNs = source.cpuAttentionOutputNs.load(std::memory_order_relaxed);
+         destination.qnnGraphCalls = source.qnnGraphCalls.load(std::memory_order_relaxed);
+         destination.qnnInputCopyNs = source.qnnInputCopyNs.load(std::memory_order_relaxed);
+         destination.qnnExecuteSyncNs = source.qnnExecuteSyncNs.load(std::memory_order_relaxed);
+@@ -700,7 +739,9 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+         }
+     }
+ 
+-    std::function<void(int)> mCompute = [=](int tId) {
++    const bool profilePhases = profile.enabled();
++    std::vector<CPUAttentionPhaseDurations> phaseDurations(profilePhases ? mThreadNum : 0);
++    std::function<void(int)> mCompute = [=, &phaseDurations](int tId) {
+         int8_t* qReordered = nullptr;
+         auto qkPacked = mTempQKBlock->host<int8_t>() + tId * mTempQKBlock->stride(0);
+         auto qkFlatten = unpackQK->host<float>() + tId * unpackQK->stride(0);
+@@ -851,6 +892,8 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+             float* valueSum = (float*)mKVCacheManager->addrOfValueSum(kvHeadIndex);
+ 
+             // Get packed Q
++            auto phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                                : std::chrono::steady_clock::time_point();
+             if (mKeyQuantMode != KVQuantMode::Int8) {
+                 qReordered = mPackQ->host<int8_t>() + tId * mPackQ->stride(0);
+                 gcore->MNNAttenPackAndScaleSingleHead((float*)qReordered,
+@@ -863,12 +906,17 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+                 qBias = (float*)(mQueryZeroPoint.ptr() + h * seqLen * mBlockNum * QUANT_INFO_BYTES);
+                 gcore->MNNSumByAxisLForMatmul_A(qSumAddr, qReordered, qScale, seqLen, sumParams4QxK);
+             }
++            if (profilePhases) {
++                phaseDurations[tId].qPackNs += elapsedNs(phaseStarted);
++            }
+ 
+             // Start computing
+             for (int i = 0; i < kvBlocks; ++i) {
+                 int subKvSeqLen = ALIMIN(mBlockKV, kvSeqLen - i * mBlockKV);
+ 
+                 // 1. query @ key
++                phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                             : std::chrono::steady_clock::time_point();
+                 if (mKeyQuantMode == KVQuantMode::TQ3) {
+                     // Vec_dot fusion: Q_rotated · TQ3_compressed_K directly (no dequant buffer)
+                     // Q_rotated = WHT_forward(Q * q_scale) computed once per KV block iteration
+@@ -1015,8 +1063,13 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+                         }
+                     }
+                 }
++                if (profilePhases) {
++                    phaseDurations[tId].qkNs += elapsedNs(phaseStarted);
++                }
+                 // 2. softmax scores, softmax src/dst shape: [kv_seq_len/mPack, seq_len, mPack]
+                 {
++                    phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                                 : std::chrono::steady_clock::time_point();
+                     if (mKeyQuantMode != KVQuantMode::Int8 || isLowerTriangular == false || sinksPtr != nullptr) {
+                         if (mBytes == 2) {
+                             _maskQK<FLOAT16_T>((float*)qkPacked, &mScale, seqLen, subKvSeqLen, mPack, kvSeqLen,
+@@ -1031,11 +1084,16 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+                     gcore->MNNSoftmax(qkSoftmax, (float*)qkPacked, runningMax, runningSum, diffScale, seqLen,
+                                       subKvSeqLen, i * mBlockKV, kvValidOffset, mPack, useMaskInSoftmax);
+                 }
++                if (profilePhases) {
++                    phaseDurations[tId].softmaxNs += elapsedNs(phaseStarted);
++                }
+                 // 3. qk @ v
+                 auto qkStride0 = ROUND_UP(subKvSeqLen, lP) * eP * mBytes;
+                 auto rowStart =
+                     (!isLowerTriangular || i * mBlockKV < kvValidOffset) ? 0 : (i * mBlockKV - kvValidOffset);
+ 
++                phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                             : std::chrono::steady_clock::time_point();
+                 if (mValueQuantMode == KVQuantMode::TQ3) {
+                     // Vec_dot Value fusion: accumulate in rotated domain, WHT_inverse once
+                     // qkSoftmax format: [kvSeq/mPack, seqLen, mPack], element (s,q) at (s/mPack)*seqLen*mPack + q*mPack
+@@ -1207,20 +1265,33 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+                         qkvFloat += (eSize * mPack * mBytes);
+                     }
+                 }
++                if (profilePhases) {
++                    phaseDurations[tId].qkvNs += elapsedNs(phaseStarted);
++                }
+ 
+                 // 4. flash attention, update each sub kvSeq's final results
++                phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                             : std::chrono::steady_clock::time_point();
+                 if (runningMax != nullptr && runningSum != nullptr && diffScale != nullptr) {
+                     gcore->MNNFlashAttentionUpdateBlockOutput((float*)outputPacked, (float*)qkvPacked, diffScale,
+                                                               runningSum, UP_DIV(mHeadDim, mPack), seqLen, mPack, i,
+                                                               kvBlocks, mPackQKV->stride(0) / mBytes, mBytes, rowStart);
+                 }
++                if (profilePhases) {
++                    phaseDurations[tId].outputNs += elapsedNs(phaseStarted);
++                }
+             }
+ 
+             // Final results writing: [head_dim/mPack, seq_len, mPack] -> [seq_len, num_head, head_dim]
+             if (!outputC4) {
+                 auto dstPtr = outputs[0]->host<int8_t>() + h * mHeadDim * mBytes;
+                 // offset = {seqLen, mNumHead * mHeadDim};
++                phaseStarted = profilePhases ? std::chrono::steady_clock::now()
++                                             : std::chrono::steady_clock::time_point();
+                 gcore->MNNUnpackCUnitTranspose((float*)dstPtr, (float*)outputPacked, seqLen, mHeadDim, offset);
++                if (profilePhases) {
++                    phaseDurations[tId].outputNs += elapsedNs(phaseStarted);
++                }
+             }
+         }
+     };
+@@ -1230,6 +1301,22 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+     }
+     MNN_CONCURRENCY_END();
+ 
++    if (profilePhases) {
++        CPUAttentionPhaseDurations criticalPath;
++        for (const auto& phases : phaseDurations) {
++            criticalPath.qPackNs = ALIMAX(criticalPath.qPackNs, phases.qPackNs);
++            criticalPath.qkNs = ALIMAX(criticalPath.qkNs, phases.qkNs);
++            criticalPath.softmaxNs = ALIMAX(criticalPath.softmaxNs, phases.softmaxNs);
++            criticalPath.qkvNs = ALIMAX(criticalPath.qkvNs, phases.qkvNs);
++            criticalPath.outputNs = ALIMAX(criticalPath.outputNs, phases.outputNs);
++        }
++        recordLLMProfile(LLMProfileCategory::CPUAttentionQPack, profileHistoryLength, criticalPath.qPackNs);
++        recordLLMProfile(LLMProfileCategory::CPUAttentionQK, profileHistoryLength, criticalPath.qkNs);
++        recordLLMProfile(LLMProfileCategory::CPUAttentionSoftmax, profileHistoryLength, criticalPath.softmaxNs);
++        recordLLMProfile(LLMProfileCategory::CPUAttentionQKV, profileHistoryLength, criticalPath.qkvNs);
++        recordLLMProfile(LLMProfileCategory::CPUAttentionOutput, profileHistoryLength, criticalPath.outputNs);
++    }
++
+     backend()->onReleaseBuffer(unpackQK.get(), Backend::STATIC);
+     backend()->onReleaseBuffer(softmMaxQ.get(), Backend::STATIC);
+     backend()->onReleaseBuffer(newPackQK.get(), Backend::STATIC);
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+index 709886b..b547310 100644
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -121,6 +121,11 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+         const auto& bucket = buckets[index];
+         const double cpuAttentionMs = nsToMs(bucket.cpuAttentionNs);
+         const double kvUpdateMs = nsToMs(bucket.cpuAttentionKVUpdateNs);
++        const double qPackMs = nsToMs(bucket.cpuAttentionQPackNs);
++        const double qkMs = nsToMs(bucket.cpuAttentionQKNs);
++        const double softmaxMs = nsToMs(bucket.cpuAttentionSoftmaxNs);
++        const double qkvMs = nsToMs(bucket.cpuAttentionQKVNs);
++        const double outputMs = nsToMs(bucket.cpuAttentionOutputNs);
+         const double qnnInputCopyMs = nsToMs(bucket.qnnInputCopyNs);
+         const double qnnExecuteSyncMs = nsToMs(bucket.qnnExecuteSyncNs);
+         const double qnnOutputCopyMs = nsToMs(bucket.qnnOutputCopyNs);
+@@ -133,6 +138,11 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+                << ",\"cpu_attention_ms\":" << cpuAttentionMs
+                << ",\"cpu_attention_kv_update_ms\":" << kvUpdateMs
+                << ",\"cpu_attention_compute_ms\":" << (cpuAttentionMs - kvUpdateMs)
++               << ",\"cpu_attention_q_pack_ms\":" << qPackMs
++               << ",\"cpu_attention_qk_ms\":" << qkMs
++               << ",\"cpu_attention_softmax_ms\":" << softmaxMs
++               << ",\"cpu_attention_qkv_ms\":" << qkvMs
++               << ",\"cpu_attention_output_ms\":" << outputMs
+                << ",\"qnn_graph_calls\":" << bucket.qnnGraphCalls
+                << ",\"qnn_input_copy_ms\":" << qnnInputCopyMs
+                << ",\"qnn_execute_sync_ms\":" << qnnExecuteSyncMs

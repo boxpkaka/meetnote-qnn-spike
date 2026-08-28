@@ -53,9 +53,9 @@ def make_separate(cpu_ops, debug_outputs):
 def use_requested_chunk_size(generator):
     original_make_io_json = generator.makeIOJson
 
-    def make_io_json(args, _seq_len, hidden_size, mask_type):
+    def make_io_json(args, _seq_len, hidden_size, mask_type, *extra):
         return original_make_io_json(
-            args, args.chunk_size, hidden_size, mask_type
+            args, args.chunk_size, hidden_size, mask_type, *extra
         )
 
     generator.makeIOJson = make_io_json

@@ -146,6 +146,16 @@ Resume device work from
 [`docs/moss-sm8850-device-todo.md`](docs/moss-sm8850-device-todo.md); the full promotion worklist is
 [`docs/moss-transcribe-diarize-todo.md`](docs/moss-transcribe-diarize-todo.md).
 
+The later full-decoder work is recorded in
+[`docs/qnn-genie-decoder-poc.md`](docs/qnn-genie-decoder-poc.md). QAIRT GGUF HTP export now runs the
+complete 28-layer decoder with external audio embeddings, c4096, AR1/AR64, and four weight-sharing
+shards. A real 118-second Q8 query matched its CPU teacher exactly, but sustained decode throttled
+from roughly 14.4 to 8.8 token/s. The 130-window speaker-only quality experiment still beat
+FireRed + Sortformer on all eight meetings, while the projected hot audio-plus-decoder RTF remained
+1.05 overall and reached 1.53 on the worst window. Consequently this is a post-`stop()` asynchronous
+quality-enhancement candidate, not a released real-time path. FireRed + Sortformer remains the
+immediate transcript baseline, and any MOSS failure must leave that result intact.
+
 After the build, run the external payload on an attached SM8850 device with:
 
 ```bash

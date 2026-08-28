@@ -12,6 +12,7 @@ INPUT_WAV="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
 HOTWORDS="${3:-}"
 EVIDENCE_DIR="${MOSS_EVIDENCE_DIR:-}"
 PROMPT_CONTRACT="${MOSS_PROMPT_CONTRACT:-}"
+PROFILE_DECODE="${MOSS_PROFILE_DECODE:-0}"
 ADB_BIN="${ADB:-adb}"
 printf -v HOTWORDS_QUOTED "'%s'" "${HOTWORDS//\'/\'\\\'\'}"
 
@@ -19,6 +20,10 @@ command -v "$ADB_BIN" >/dev/null || { echo "ERROR: adb is required" >&2; exit 1;
 [[ -x "$RELEASE_DIR/moss_qnn_runner" ]] || { echo "ERROR: Android runner is missing" >&2; exit 1; }
 [[ -f "$RELEASE_DIR/artifact-manifest.json" ]] || { echo "ERROR: artifact manifest is missing" >&2; exit 1; }
 [[ -f "$INPUT_WAV" ]] || { echo "ERROR: input WAV is missing" >&2; exit 1; }
+[[ "$PROFILE_DECODE" == 0 || "$PROFILE_DECODE" == 1 ]] || {
+  echo "ERROR: MOSS_PROFILE_DECODE must be 0 or 1" >&2
+  exit 1
+}
 if [[ -z "$PROMPT_CONTRACT" ]]; then
   [[ -d "$RELEASE_DIR/prompt-contract" ]] || {
     echo "ERROR: release prompt-contract directory is missing" >&2
@@ -63,6 +68,7 @@ run_device() {
   $ADB_BIN shell "cd '$DEVICE_DIR' && chmod 755 moss_qnn_runner && \
   export LD_LIBRARY_PATH='$DEVICE_DIR/lib' && \
   export ADSP_LIBRARY_PATH='$DEVICE_DIR/dsp;/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp' && \
+  export MOSS_PROFILE_DECODE='$PROFILE_DECODE' && \
   ./moss_qnn_runner config.json input.wav $HOTWORDS_QUOTED"
 }
 

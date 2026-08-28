@@ -1,0 +1,30 @@
+diff --git a/backends/qualcomm/_passes/convert_mha_to_sha.py b/backends/qualcomm/_passes/convert_mha_to_sha.py
+index b225fe6..8460e23 100644
+--- a/backends/qualcomm/_passes/convert_mha_to_sha.py
++++ b/backends/qualcomm/_passes/convert_mha_to_sha.py
+@@ -315,6 +315,17 @@ class ConvertMhaToSha(ExportPass):
+             new_nodes = _split_call(node, sha, new_args, out_shape)
+             return new_nodes
+ 
++        def _visit_rms_norm(node, sha):
++            """Split the MHA input while sharing the per-head norm weight."""
++            out_shape = _shape(node)
++            assert (
++                out_shape[sha.axis] % sha.heads == 0
++            ), f"mismatching num_heads, {out_shape[sha.axis]} % {sha.heads} != 0"
++            out_shape[sha.axis] //= sha.heads
++            split_inputs = _visit(node.args[0], sha)
++            new_args = [(arg, *node.args[1:]) for arg in split_inputs]
++            return _split_call(node, sha, new_args, out_shape)
++
+         def _visit_placeholder(node, sha):
+             in_shape = _shape(node)
+             if (
+@@ -570,6 +581,7 @@ class ConvertMhaToSha(ExportPass):
+                 exir_ops.edge.aten.add.Tensor: _visit_binary,
+                 exir_ops.edge.aten.mul.Tensor: _visit_binary,
+                 exir_ops.edge.aten.eq.Tensor: _no_split,
++                exir_ops.edge.aten.rms_norm.default: _visit_rms_norm,
+             }
+ 
+             target = node.target if _is_call(node) else node.op

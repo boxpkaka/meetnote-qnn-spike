@@ -1,0 +1,429 @@
+diff --git a/include/MNN/LLMProfile.h b/include/MNN/LLMProfile.h
+new file mode 100644
+index 0000000..472fbd7
+--- /dev/null
++++ b/include/MNN/LLMProfile.h
+@@ -0,0 +1,48 @@
++//
++//  LLMProfile.h
++//  MNN
++//
++//  Low-overhead profiling for heterogeneous LLM decode diagnostics.
++//
++
++#ifndef MNN_LLM_PROFILE_H
++#define MNN_LLM_PROFILE_H
++
++#include <cstddef>
++#include <cstdint>
++
++#include <MNN/MNNDefine.h>
++
++namespace MNN {
++
++enum class LLMProfileCategory : int {
++    CPUAttention = 0,
++    CPUAttentionKVUpdate = 1,
++    QNNInputCopy = 2,
++    QNNExecuteSync = 3,
++    QNNOutputCopy = 4,
++    QNNStateUpdate = 5,
++};
++
++struct LLMProfileBucket {
++    int32_t historyBegin = 0;
++    int32_t historyEnd = 0;
++    uint64_t cpuAttentionCalls = 0;
++    uint64_t cpuAttentionNs = 0;
++    uint64_t cpuAttentionKVUpdateNs = 0;
++    uint64_t qnnGraphCalls = 0;
++    uint64_t qnnInputCopyNs = 0;
++    uint64_t qnnExecuteSyncNs = 0;
++    uint64_t qnnOutputCopyNs = 0;
++    uint64_t qnnStateUpdateNs = 0;
++};
++
++MNN_PUBLIC void setLLMProfileEnabled(bool enabled);
++MNN_PUBLIC bool isLLMProfileEnabled();
++MNN_PUBLIC void resetLLMProfile();
++MNN_PUBLIC void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t durationNs);
++MNN_PUBLIC size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity);
++
++} // namespace MNN
++
++#endif // MNN_LLM_PROFILE_H
+diff --git a/source/backend/cpu/CPUAttention.cpp b/source/backend/cpu/CPUAttention.cpp
+index d18d141..8db539a 100644
+--- a/source/backend/cpu/CPUAttention.cpp
++++ b/source/backend/cpu/CPUAttention.cpp
+@@ -8,7 +8,11 @@
+ 
+ #ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+ 
++#include <array>
++#include <atomic>
++#include <chrono>
+ #include <limits>
++#include <MNN/LLMProfile.h>
+ #include "CPUAttention.hpp"
+ #include "CPUBackend.hpp"
+ #include "compute/CommonOptFunction.h"
+@@ -29,6 +33,142 @@
+ 
+ namespace MNN {
+ 
++namespace {
++
++constexpr size_t kProfileBucketCount = 5;
++constexpr int kProfileBucketWidth = 2048;
++
++struct AtomicLLMProfileBucket {
++    std::atomic<uint64_t> cpuAttentionCalls{0};
++    std::atomic<uint64_t> cpuAttentionNs{0};
++    std::atomic<uint64_t> cpuAttentionKVUpdateNs{0};
++    std::atomic<uint64_t> qnnGraphCalls{0};
++    std::atomic<uint64_t> qnnInputCopyNs{0};
++    std::atomic<uint64_t> qnnExecuteSyncNs{0};
++    std::atomic<uint64_t> qnnOutputCopyNs{0};
++    std::atomic<uint64_t> qnnStateUpdateNs{0};
++};
++
++std::atomic<bool> gLLMProfileEnabled{false};
++std::array<AtomicLLMProfileBucket, kProfileBucketCount> gLLMProfileBuckets;
++
++size_t profileBucketIndex(int historyLength) {
++    if (historyLength <= 0) {
++        return 0;
++    }
++    const size_t index = static_cast<size_t>(historyLength / kProfileBucketWidth);
++    return index < kProfileBucketCount ? index : kProfileBucketCount - 1;
++}
++
++uint64_t elapsedNs(std::chrono::steady_clock::time_point started) {
++    return static_cast<uint64_t>(
++        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
++}
++
++class CPUAttentionProfileScope {
++public:
++    explicit CPUAttentionProfileScope(bool decode)
++        : mEnabled(decode && isLLMProfileEnabled()),
++          mStarted(mEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point()) {
++    }
++
++    ~CPUAttentionProfileScope() {
++        if (mEnabled && mHistoryLength >= 0) {
++            recordLLMProfile(LLMProfileCategory::CPUAttention, mHistoryLength, elapsedNs(mStarted));
++        }
++    }
++
++    bool enabled() const {
++        return mEnabled;
++    }
++
++    void setHistoryLength(int historyLength) {
++        mHistoryLength = historyLength;
++    }
++
++private:
++    bool mEnabled = false;
++    int mHistoryLength = -1;
++    std::chrono::steady_clock::time_point mStarted;
++};
++
++} // namespace
++
++void setLLMProfileEnabled(bool enabled) {
++    gLLMProfileEnabled.store(enabled, std::memory_order_relaxed);
++}
++
++bool isLLMProfileEnabled() {
++    return gLLMProfileEnabled.load(std::memory_order_relaxed);
++}
++
++void resetLLMProfile() {
++    for (auto& bucket : gLLMProfileBuckets) {
++        bucket.cpuAttentionCalls.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionNs.store(0, std::memory_order_relaxed);
++        bucket.cpuAttentionKVUpdateNs.store(0, std::memory_order_relaxed);
++        bucket.qnnGraphCalls.store(0, std::memory_order_relaxed);
++        bucket.qnnInputCopyNs.store(0, std::memory_order_relaxed);
++        bucket.qnnExecuteSyncNs.store(0, std::memory_order_relaxed);
++        bucket.qnnOutputCopyNs.store(0, std::memory_order_relaxed);
++        bucket.qnnStateUpdateNs.store(0, std::memory_order_relaxed);
++    }
++}
++
++void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t durationNs) {
++    if (!isLLMProfileEnabled()) {
++        return;
++    }
++    auto& bucket = gLLMProfileBuckets[profileBucketIndex(historyLength)];
++    switch (category) {
++        case LLMProfileCategory::CPUAttention:
++            bucket.cpuAttentionCalls.fetch_add(1, std::memory_order_relaxed);
++            bucket.cpuAttentionNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::CPUAttentionKVUpdate:
++            bucket.cpuAttentionKVUpdateNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::QNNInputCopy:
++            bucket.qnnInputCopyNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::QNNExecuteSync:
++            bucket.qnnGraphCalls.fetch_add(1, std::memory_order_relaxed);
++            bucket.qnnExecuteSyncNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::QNNOutputCopy:
++            bucket.qnnOutputCopyNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::QNNStateUpdate:
++            bucket.qnnStateUpdateNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++    }
++}
++
++size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity) {
++    if (buckets == nullptr || capacity == 0) {
++        return kProfileBucketCount;
++    }
++    const size_t count = capacity < kProfileBucketCount ? capacity : kProfileBucketCount;
++    for (size_t i = 0; i < count; ++i) {
++        const auto& source = gLLMProfileBuckets[i];
++        auto& destination = buckets[i];
++        destination.historyBegin = static_cast<int32_t>(i * kProfileBucketWidth);
++        destination.historyEnd = static_cast<int32_t>((i + 1) * kProfileBucketWidth);
++        if (i + 1 == kProfileBucketCount) {
++            destination.historyEnd = 10240;
++        }
++        destination.cpuAttentionCalls = source.cpuAttentionCalls.load(std::memory_order_relaxed);
++        destination.cpuAttentionNs = source.cpuAttentionNs.load(std::memory_order_relaxed);
++        destination.cpuAttentionKVUpdateNs = source.cpuAttentionKVUpdateNs.load(std::memory_order_relaxed);
++        destination.qnnGraphCalls = source.qnnGraphCalls.load(std::memory_order_relaxed);
++        destination.qnnInputCopyNs = source.qnnInputCopyNs.load(std::memory_order_relaxed);
++        destination.qnnExecuteSyncNs = source.qnnExecuteSyncNs.load(std::memory_order_relaxed);
++        destination.qnnOutputCopyNs = source.qnnOutputCopyNs.load(std::memory_order_relaxed);
++        destination.qnnStateUpdateNs = source.qnnStateUpdateNs.load(std::memory_order_relaxed);
++    }
++    return kProfileBucketCount;
++}
++
+ template <typename T>
+ static void _maskQK(float* qkPacked, const float* scale, size_t seqLen, size_t processedKvSeq, int pack, int kvSeqLen,
+                     int kvoffset, int padKvSeqLen, const float* sinksPtr, const Tensor* mask, bool quantKey,
+@@ -357,6 +497,7 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+     auto key = inputs[1];
+     auto value = inputs[2];
+     int seqLen = query->length(1);
++    CPUAttentionProfileScope profile(seqLen == 1);
+     const Tensor* mask = nullptr;
+     if (inputs.size() > 3) {
+         mask = inputs[3];
+@@ -388,6 +529,7 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+     }
+     int insertLen = seqLen;
+ 
++    auto kvUpdateStarted = profile.enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+     if (!mIsKVShared) {
+         if (mKVCache && mMeta != nullptr) {
+             if (mMeta->previous == mMeta->remove) {
+@@ -409,6 +551,12 @@ ErrorCode CPUAttention::onExecute(const std::vector<Tensor*>& inputs, const std:
+         insertLen = (int)mMeta->add;
+     }
+ 
++    const int profileHistoryLength = mKVCacheManager->kvLength();
++    profile.setHistoryLength(profileHistoryLength);
++    if (profile.enabled()) {
++        recordLLMProfile(LLMProfileCategory::CPUAttentionKVUpdate, profileHistoryLength, elapsedNs(kvUpdateStarted));
++    }
++
+     if (mUseFlashAttention) {
+         mBlockKV = ALIMIN(MNN_FLASH_ATTENTION_BLOCK_SIZE, mKVCacheManager->kvLength());
+     } else {
+diff --git a/source/backend/qnn/backend/QNNBackend.cpp b/source/backend/qnn/backend/QNNBackend.cpp
+index 1a58150..2b8b20b 100644
+--- a/source/backend/qnn/backend/QNNBackend.cpp
++++ b/source/backend/qnn/backend/QNNBackend.cpp
+@@ -7,10 +7,12 @@
+ //
+ 
+ #include "QNNBackend.hpp"
++#include <chrono>
+ #include "core/MNNFileUtils.h"
+ #include "QnnTypeMacros.hpp"
+ // #define MNN_OPEN_TIME_TRACE
+ #include <MNN/AutoTime.hpp>
++#include <MNN/LLMProfile.h>
+ #include "core/FileLoader.hpp"
+ // #define QNN_PROFILE_OP
+ // #define QNN_PROFILE_SUMMARIZE
+@@ -1391,11 +1393,20 @@ public:
+         auto inputTensor = ctx->inputs();
+         auto outputTensor = ctx->outputs();
+ 
++        auto meta = (KVMeta*)(ctx->backend()->getMetaPtr());
++        const bool profileDecode = MNN::isLLMProfileEnabled() && meta != nullptr && meta->add == 1;
++        const int profileHistoryLength = meta == nullptr ? 0 : static_cast<int>(meta->previous + meta->add);
++        auto profileStarted = profileDecode ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
++
+         for (int i=0; i<mInputs.size(); ++i) {
+             ctx->backend()->onCopyBuffer(inputTensor[i], mRealInputs[i].get());
+         }
++        if (profileDecode) {
++            MNN::recordLLMProfile(MNN::LLMProfileCategory::QNNInputCopy, profileHistoryLength,
++                                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - profileStarted).count()));
++        }
+         // If has remove, remove invalid state
+-        auto meta = (KVMeta*)(ctx->backend()->getMetaPtr());
+         if (nullptr != meta && mStateInput.size() > 0) {
+             auto maskPtr = (mnn_qnn_fp16_t*)mMask->mPtr;
+             if (meta->remove > 0) {
+@@ -1410,10 +1421,23 @@ public:
+                 }
+             }
+         }
++        profileStarted = profileDecode ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+         mRawExecutor->invokModel(shapeIndex);
++        if (profileDecode) {
++            MNN::recordLLMProfile(MNN::LLMProfileCategory::QNNExecuteSync, profileHistoryLength,
++                                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - profileStarted).count()));
++            profileStarted = std::chrono::steady_clock::now();
++        }
+         for (int i=0; i<mOutputs.size(); ++i) {
+             ctx->backend()->onCopyBuffer(mRealOutputs[i].get(), outputTensor[i]);
+         }
++        if (profileDecode) {
++            MNN::recordLLMProfile(MNN::LLMProfileCategory::QNNOutputCopy, profileHistoryLength,
++                                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - profileStarted).count()));
++            profileStarted = std::chrono::steady_clock::now();
++        }
+         // Update State
+         if (nullptr != meta && mStateInput.size() > 0) {
+             auto maskPtr = (mnn_qnn_fp16_t*)mMask->mPtr;
+@@ -1440,6 +1464,11 @@ public:
+             }
+             mStateCurrent += meta->add;
+         }
++        if (profileDecode) {
++            MNN::recordLLMProfile(MNN::LLMProfileCategory::QNNStateUpdate, profileHistoryLength,
++                                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                      std::chrono::steady_clock::now() - profileStarted).count()));
++        }
+         return true;
+     }
+ };
+@@ -2287,4 +2316,4 @@ void registerQNNRuntimeCreator() {
+ #endif
+ }
+ 
+-} // end namespace MNN
+\ No newline at end of file
++} // end namespace MNN
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+index 460136e..709886b 100644
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -1,6 +1,7 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <chrono>
++#include <cstdlib>
+ #include <fstream>
+ #include <iostream>
+ #include <limits>
+@@ -9,7 +10,9 @@
+ #include <sstream>
+ #include <string>
+ #include <thread>
++#include <vector>
+ 
++#include <MNN/LLMProfile.h>
+ #include <llm/llm.hpp>
+ 
+ using MNN::Transformer::Llm;
+@@ -101,6 +104,45 @@ int configuredTokenLimit(const char* configPath, const char* key) {
+     return std::stoi(match[1].str());
+ }
+ 
++bool decodeProfileRequested() {
++    const char* value = std::getenv("MOSS_PROFILE_DECODE");
++    return value != nullptr && value[0] != '\0' && std::string(value) != "0";
++}
++
++double nsToMs(uint64_t durationNs) {
++    return static_cast<double>(durationNs) / 1000000.0;
++}
++
++void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileBucket>& buckets,
++                        double decodeMs) {
++    double accountedMs = 0.0;
++    output << "{\"history_buckets\":[";
++    for (size_t index = 0; index < buckets.size(); ++index) {
++        const auto& bucket = buckets[index];
++        const double cpuAttentionMs = nsToMs(bucket.cpuAttentionNs);
++        const double kvUpdateMs = nsToMs(bucket.cpuAttentionKVUpdateNs);
++        const double qnnInputCopyMs = nsToMs(bucket.qnnInputCopyNs);
++        const double qnnExecuteSyncMs = nsToMs(bucket.qnnExecuteSyncNs);
++        const double qnnOutputCopyMs = nsToMs(bucket.qnnOutputCopyNs);
++        const double qnnStateUpdateMs = nsToMs(bucket.qnnStateUpdateNs);
++        accountedMs += cpuAttentionMs + qnnInputCopyMs + qnnExecuteSyncMs + qnnOutputCopyMs + qnnStateUpdateMs;
++        if (index > 0) output << ',';
++        output << "{\"history_begin\":" << bucket.historyBegin
++               << ",\"history_end\":" << bucket.historyEnd
++               << ",\"cpu_attention_calls\":" << bucket.cpuAttentionCalls
++               << ",\"cpu_attention_ms\":" << cpuAttentionMs
++               << ",\"cpu_attention_kv_update_ms\":" << kvUpdateMs
++               << ",\"cpu_attention_compute_ms\":" << (cpuAttentionMs - kvUpdateMs)
++               << ",\"qnn_graph_calls\":" << bucket.qnnGraphCalls
++               << ",\"qnn_input_copy_ms\":" << qnnInputCopyMs
++               << ",\"qnn_execute_sync_ms\":" << qnnExecuteSyncMs
++               << ",\"qnn_output_copy_ms\":" << qnnOutputCopyMs
++               << ",\"qnn_state_update_ms\":" << qnnStateUpdateMs << '}';
++    }
++    output << "],\"accounted_ms\":" << accountedMs
++           << ",\"unaccounted_ms\":" << (decodeMs - accountedMs) << '}';
++}
++
+ }  // namespace
+ 
+ int main(int argc, char** argv) {
+@@ -149,13 +191,22 @@ int main(int argc, char** argv) {
+     });
+     auto started = std::chrono::steady_clock::now();
+     std::ostringstream raw;
++    const bool profileDecode = decodeProfileRequested();
++    MNN::resetLLMProfile();
++    MNN::setLLMProfileEnabled(profileDecode);
+     llm->response(prompt, &raw, nullptr, maxNewTokens);
++    MNN::setLLMProfileEnabled(false);
+     double totalMs = std::chrono::duration<double, std::milli>(
+         std::chrono::steady_clock::now() - started).count();
+     monitoring.store(false);
+     monitor.join();
+ 
+     const auto* context = llm->getContext();
++    std::vector<MNN::LLMProfileBucket> profileBuckets;
++    if (profileDecode) {
++        profileBuckets.resize(MNN::getLLMProfileBuckets(nullptr, 0));
++        MNN::getLLMProfileBuckets(profileBuckets.data(), profileBuckets.size());
++    }
+     bool parsed = false;
+     bool budget = context->status == LlmStatus::MAX_TOKENS_FINISHED ||
+                   context->gen_seq_len >= maxNewTokens;
+@@ -186,7 +237,12 @@ int main(int argc, char** argv) {
+            << ",\"encoder\":" << context->audio_us / 1000.0
+            << ",\"prefill\":" << context->prefill_us / 1000.0
+            << ",\"decode\":" << context->decode_us / 1000.0
+-           << ",\"total\":" << totalMs << "},\"rtf\":"
++           << ",\"total\":" << totalMs << '}';
++    if (profileDecode) {
++        result << ",\"decode_profile\":";
++        writeDecodeProfile(result, profileBuckets, context->decode_us / 1000.0);
++    }
++    result << ",\"rtf\":"
+            << (context->audio_input_s > 0 ? totalMs / 1000.0 / context->audio_input_s : 0.0)
+            << ",\"peak_pss_bytes\":" << peakPss.load() << "}";
+     std::cout << result.str() << std::endl;

@@ -1,0 +1,162 @@
+diff --git a/include/MNN/LLMProfile.h b/include/MNN/LLMProfile.h
+index 0e7cb59..889a6bb 100644
+--- a/include/MNN/LLMProfile.h
++++ b/include/MNN/LLMProfile.h
+@@ -25,6 +25,11 @@ enum class LLMProfileCategory : int {
+     QNNExecuteSync = 8,
+     QNNOutputCopy = 9,
+     QNNStateUpdate = 10,
++    OpenCLAttention = 11,
++    OpenCLAttentionRearrange = 12,
++    OpenCLAttentionQK = 13,
++    OpenCLAttentionSoftmax = 14,
++    OpenCLAttentionQKV = 15,
+ };
+ 
+ struct LLMProfileBucket {
+@@ -43,6 +48,12 @@ struct LLMProfileBucket {
+     uint64_t qnnExecuteSyncNs = 0;
+     uint64_t qnnOutputCopyNs = 0;
+     uint64_t qnnStateUpdateNs = 0;
++    uint64_t openclAttentionCalls = 0;
++    uint64_t openclAttentionNs = 0;
++    uint64_t openclAttentionRearrangeNs = 0;
++    uint64_t openclAttentionQKNs = 0;
++    uint64_t openclAttentionSoftmaxNs = 0;
++    uint64_t openclAttentionQKVNs = 0;
+ };
+ 
+ MNN_PUBLIC void setLLMProfileEnabled(bool enabled);
+diff --git a/source/backend/cpu/CPUAttention.cpp b/source/backend/cpu/CPUAttention.cpp
+index c74b735..6a068ed 100644
+--- a/source/backend/cpu/CPUAttention.cpp
++++ b/source/backend/cpu/CPUAttention.cpp
+@@ -53,6 +53,12 @@ struct AtomicLLMProfileBucket {
+     std::atomic<uint64_t> qnnExecuteSyncNs{0};
+     std::atomic<uint64_t> qnnOutputCopyNs{0};
+     std::atomic<uint64_t> qnnStateUpdateNs{0};
++    std::atomic<uint64_t> openclAttentionCalls{0};
++    std::atomic<uint64_t> openclAttentionNs{0};
++    std::atomic<uint64_t> openclAttentionRearrangeNs{0};
++    std::atomic<uint64_t> openclAttentionQKNs{0};
++    std::atomic<uint64_t> openclAttentionSoftmaxNs{0};
++    std::atomic<uint64_t> openclAttentionQKVNs{0};
+ };
+ 
+ struct CPUAttentionPhaseDurations {
+@@ -130,6 +136,12 @@ void resetLLMProfile() {
+         bucket.qnnExecuteSyncNs.store(0, std::memory_order_relaxed);
+         bucket.qnnOutputCopyNs.store(0, std::memory_order_relaxed);
+         bucket.qnnStateUpdateNs.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionCalls.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionNs.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionRearrangeNs.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionQKNs.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionSoftmaxNs.store(0, std::memory_order_relaxed);
++        bucket.openclAttentionQKVNs.store(0, std::memory_order_relaxed);
+     }
+ }
+ 
+@@ -177,6 +189,22 @@ void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t d
+         case LLMProfileCategory::QNNStateUpdate:
+             bucket.qnnStateUpdateNs.fetch_add(durationNs, std::memory_order_relaxed);
+             break;
++        case LLMProfileCategory::OpenCLAttention:
++            bucket.openclAttentionCalls.fetch_add(1, std::memory_order_relaxed);
++            bucket.openclAttentionNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::OpenCLAttentionRearrange:
++            bucket.openclAttentionRearrangeNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::OpenCLAttentionQK:
++            bucket.openclAttentionQKNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::OpenCLAttentionSoftmax:
++            bucket.openclAttentionSoftmaxNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
++        case LLMProfileCategory::OpenCLAttentionQKV:
++            bucket.openclAttentionQKVNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
+     }
+ }
+ 
+@@ -208,6 +239,12 @@ size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity) {
+         destination.qnnExecuteSyncNs = source.qnnExecuteSyncNs.load(std::memory_order_relaxed);
+         destination.qnnOutputCopyNs = source.qnnOutputCopyNs.load(std::memory_order_relaxed);
+         destination.qnnStateUpdateNs = source.qnnStateUpdateNs.load(std::memory_order_relaxed);
++        destination.openclAttentionCalls = source.openclAttentionCalls.load(std::memory_order_relaxed);
++        destination.openclAttentionNs = source.openclAttentionNs.load(std::memory_order_relaxed);
++        destination.openclAttentionRearrangeNs = source.openclAttentionRearrangeNs.load(std::memory_order_relaxed);
++        destination.openclAttentionQKNs = source.openclAttentionQKNs.load(std::memory_order_relaxed);
++        destination.openclAttentionSoftmaxNs = source.openclAttentionSoftmaxNs.load(std::memory_order_relaxed);
++        destination.openclAttentionQKVNs = source.openclAttentionQKVNs.load(std::memory_order_relaxed);
+     }
+     return kProfileBucketCount;
+ }
+diff --git a/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp b/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
+index d10d1d7..10530f8 100644
+--- a/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
++++ b/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
+@@ -8,6 +8,7 @@
+ #ifdef MNN_SUPPORT_TRANSFORMER_FUSE
+ 
+ #include "backend/opencl/execution/buffer/AttentionBufExecution.hpp"
++#include <MNN/LLMProfile.h>
+ #include <fstream>
+ namespace MNN {
+ namespace OpenCL {
+@@ -1960,6 +1961,20 @@ ErrorCode AttentionBufExecution::onExecute(const std::vector<Tensor*>& inputs, c
+             runKernel2D(mKernel_qkv, mGlobalWorkSizeQkv, mLocalWorkSizeQkv, mOpenCLBackend->getOpenCLRuntime(),
+                         &event4);
+             mOpenCLBackend->getOpenCLRuntime()->pushEvent({"matmul_qkv", event4});
++            if (isLLMProfileEnabled()) {
++                auto* runtime = mOpenCLBackend->getOpenCLRuntime();
++                const uint64_t rearrangeNs =
++                    static_cast<uint64_t>(runtime->getEventTime(event0) + runtime->getEventTime(event3)) * 1000;
++                const uint64_t qkNs = static_cast<uint64_t>(runtime->getEventTime(event1)) * 1000;
++                const uint64_t softmaxNs = static_cast<uint64_t>(runtime->getEventTime(event2)) * 1000;
++                const uint64_t qkvNs = static_cast<uint64_t>(runtime->getEventTime(event4)) * 1000;
++                recordLLMProfile(LLMProfileCategory::OpenCLAttention, mKvSeqlen,
++                                 rearrangeNs + qkNs + softmaxNs + qkvNs);
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionRearrange, mKvSeqlen, rearrangeNs);
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQK, mKvSeqlen, qkNs);
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionSoftmax, mKvSeqlen, softmaxNs);
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQKV, mKvSeqlen, qkvNs);
++            }
+         } else {
+             cl::Event event0, event1, event2, event3, event4, event5, event6;
+             run3DKernelDefault(mKernel_rearrangeQ, mGlobalWorkSizeRearrgQ, mLocalWorkSizeRearrgQ,
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+index df2dc10..a5472c8 100644
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -132,7 +132,13 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+         const double qnnExecuteSyncMs = nsToMs(bucket.qnnExecuteSyncNs);
+         const double qnnOutputCopyMs = nsToMs(bucket.qnnOutputCopyNs);
+         const double qnnStateUpdateMs = nsToMs(bucket.qnnStateUpdateNs);
+-        accountedMs += cpuAttentionMs + qnnInputCopyMs + qnnExecuteSyncMs + qnnOutputCopyMs + qnnStateUpdateMs;
++        const double openclAttentionMs = nsToMs(bucket.openclAttentionNs);
++        const double openclRearrangeMs = nsToMs(bucket.openclAttentionRearrangeNs);
++        const double openclQKMs = nsToMs(bucket.openclAttentionQKNs);
++        const double openclSoftmaxMs = nsToMs(bucket.openclAttentionSoftmaxNs);
++        const double openclQKVMs = nsToMs(bucket.openclAttentionQKVNs);
++        accountedMs += cpuAttentionMs + qnnInputCopyMs + qnnExecuteSyncMs + qnnOutputCopyMs +
++                       qnnStateUpdateMs + openclAttentionMs;
+         if (index > 0) output << ',';
+         output << "{\"history_begin\":" << bucket.historyBegin
+                << ",\"history_end\":" << bucket.historyEnd
+@@ -151,7 +157,13 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+                << ",\"qnn_input_copy_ms\":" << qnnInputCopyMs
+                << ",\"qnn_execute_sync_ms\":" << qnnExecuteSyncMs
+                << ",\"qnn_output_copy_ms\":" << qnnOutputCopyMs
+-               << ",\"qnn_state_update_ms\":" << qnnStateUpdateMs << '}';
++               << ",\"qnn_state_update_ms\":" << qnnStateUpdateMs
++               << ",\"opencl_attention_calls\":" << bucket.openclAttentionCalls
++               << ",\"opencl_attention_ms\":" << openclAttentionMs
++               << ",\"opencl_attention_rearrange_ms\":" << openclRearrangeMs
++               << ",\"opencl_attention_qk_ms\":" << openclQKMs
++               << ",\"opencl_attention_softmax_ms\":" << openclSoftmaxMs
++               << ",\"opencl_attention_qkv_ms\":" << openclQKVMs << '}';
+     }
+     output << "],\"accounted_ms\":" << accountedMs
+            << ",\"unaccounted_ms\":" << (decodeMs - accountedMs) << '}';

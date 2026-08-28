@@ -1,0 +1,215 @@
+diff --git a/include/MNN/LLMProfile.h b/include/MNN/LLMProfile.h
+index 889a6bb..cce18f1 100644
+--- a/include/MNN/LLMProfile.h
++++ b/include/MNN/LLMProfile.h
+@@ -30,6 +30,7 @@ enum class LLMProfileCategory : int {
+     OpenCLAttentionQK = 13,
+     OpenCLAttentionSoftmax = 14,
+     OpenCLAttentionQKV = 15,
++    OpenCLKernelTotal = 16,
+ };
+ 
+ struct LLMProfileBucket {
+@@ -54,10 +55,13 @@ struct LLMProfileBucket {
+     uint64_t openclAttentionQKNs = 0;
+     uint64_t openclAttentionSoftmaxNs = 0;
+     uint64_t openclAttentionQKVNs = 0;
++    uint64_t openclKernelTotalNs = 0;
+ };
+ 
+ MNN_PUBLIC void setLLMProfileEnabled(bool enabled);
+ MNN_PUBLIC bool isLLMProfileEnabled();
++MNN_PUBLIC void setLLMProfileHistoryLength(int historyLength);
++MNN_PUBLIC int getLLMProfileHistoryLength();
+ MNN_PUBLIC void resetLLMProfile();
+ MNN_PUBLIC void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t durationNs);
+ MNN_PUBLIC size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity);
+diff --git a/source/backend/cpu/CPUAttention.cpp b/source/backend/cpu/CPUAttention.cpp
+index 6a068ed..85d7f30 100644
+--- a/source/backend/cpu/CPUAttention.cpp
++++ b/source/backend/cpu/CPUAttention.cpp
+@@ -59,6 +59,7 @@ struct AtomicLLMProfileBucket {
+     std::atomic<uint64_t> openclAttentionQKNs{0};
+     std::atomic<uint64_t> openclAttentionSoftmaxNs{0};
+     std::atomic<uint64_t> openclAttentionQKVNs{0};
++    std::atomic<uint64_t> openclKernelTotalNs{0};
+ };
+ 
+ struct CPUAttentionPhaseDurations {
+@@ -72,5 +73,6 @@ struct CPUAttentionPhaseDurations {
+ 
+ std::atomic<bool> gLLMProfileEnabled{false};
++std::atomic<int> gLLMProfileHistoryLength{-1};
+ std::array<AtomicLLMProfileBucket, kProfileBucketCount> gLLMProfileBuckets;
+ 
+ size_t profileBucketIndex(int historyLength) {
+@@ -121,7 +123,16 @@ bool isLLMProfileEnabled() {
+     return gLLMProfileEnabled.load(std::memory_order_relaxed);
+ }
+ 
++void setLLMProfileHistoryLength(int historyLength) {
++    gLLMProfileHistoryLength.store(historyLength, std::memory_order_relaxed);
++}
++
++int getLLMProfileHistoryLength() {
++    return gLLMProfileHistoryLength.load(std::memory_order_relaxed);
++}
++
+ void resetLLMProfile() {
++    gLLMProfileHistoryLength.store(-1, std::memory_order_relaxed);
+     for (auto& bucket : gLLMProfileBuckets) {
+         bucket.cpuAttentionCalls.store(0, std::memory_order_relaxed);
+         bucket.cpuAttentionNs.store(0, std::memory_order_relaxed);
+@@ -142,6 +153,7 @@ void resetLLMProfile() {
+         bucket.openclAttentionQKNs.store(0, std::memory_order_relaxed);
+         bucket.openclAttentionSoftmaxNs.store(0, std::memory_order_relaxed);
+         bucket.openclAttentionQKVNs.store(0, std::memory_order_relaxed);
++        bucket.openclKernelTotalNs.store(0, std::memory_order_relaxed);
+     }
+ }
+ 
+@@ -208,6 +220,9 @@ void recordLLMProfile(LLMProfileCategory category, int historyLength, uint64_t d
+         case LLMProfileCategory::OpenCLAttentionQKV:
+             bucket.openclAttentionQKVNs.fetch_add(durationNs, std::memory_order_relaxed);
+             break;
++        case LLMProfileCategory::OpenCLKernelTotal:
++            bucket.openclKernelTotalNs.fetch_add(durationNs, std::memory_order_relaxed);
++            break;
+     }
+ }
+ 
+@@ -245,6 +260,7 @@ size_t getLLMProfileBuckets(LLMProfileBucket* buckets, size_t capacity) {
+         destination.openclAttentionQKNs = source.openclAttentionQKNs.load(std::memory_order_relaxed);
+         destination.openclAttentionSoftmaxNs = source.openclAttentionSoftmaxNs.load(std::memory_order_relaxed);
+         destination.openclAttentionQKVNs = source.openclAttentionQKVNs.load(std::memory_order_relaxed);
++        destination.openclKernelTotalNs = source.openclKernelTotalNs.load(std::memory_order_relaxed);
+     }
+     return kProfileBucketCount;
+ }
+diff --git a/source/backend/opencl/core/runtime/OpenCLRuntime.cpp b/source/backend/opencl/core/runtime/OpenCLRuntime.cpp
+index 54a9660..417733b 100644
+--- a/source/backend/opencl/core/runtime/OpenCLRuntime.cpp
++++ b/source/backend/opencl/core/runtime/OpenCLRuntime.cpp
+@@ -6,6 +6,7 @@
+ //
+ 
+ #include "backend/opencl/core/runtime/OpenCLRuntime.hpp"
++#include <MNN/LLMProfile.h>
+ #include <cstdlib>
+ #include <memory>
+ #include <string>
+@@ -1027,6 +1028,10 @@ void OpenCLRuntime::printEventTime(){
+     unsigned int conv_gemm2_buf_time = 0, conv_gemm1_buf_time = 0;
+     unsigned int conv_1x1_buf_time = 0, conv_ori_buf_time = 0, wino_gemm_time = 0;
+ 
++    const int profileHistoryLength = getLLMProfileHistoryLength();
++    const bool profileDecode = isLLMProfileEnabled() && profileHistoryLength >= 0;
++    uint64_t profileKernelTotalNs = 0;
++    uint64_t profileAttentionNs = 0;
+     std::vector<std::pair<std::string, int>> kernels(mEvents.size());
+     for(int i = 0; i < mEvents.size(); ++i){
+         auto event = &mEvents[i].second;
+@@ -1037,6 +1042,31 @@ void OpenCLRuntime::printEventTime(){
+         auto StopNanos = event->getProfilingInfo<CL_PROFILING_COMMAND_END>();
+         auto kernel_time = (unsigned int)((StopNanos - StartNanos) / 1000.0);
+         mKernelTime += kernel_time;
++        if (profileDecode) {
++            const uint64_t kernelNs = static_cast<uint64_t>(kernel_time) * 1000;
++            const auto& kernelName = mEvents[i].first;
++            profileKernelTotalNs += kernelNs;
++            if (kernelName == "rearrange_k" || kernelName == "rearrange_v") {
++                profileAttentionNs += kernelNs;
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionRearrange,
++                                 profileHistoryLength, kernelNs);
++            } else if (kernelName == "matmul_qk_div_mask") {
++                profileAttentionNs += kernelNs;
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQK,
++                                 profileHistoryLength, kernelNs);
++            } else if (kernelName == "softmax") {
++                profileAttentionNs += kernelNs;
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionSoftmax,
++                                 profileHistoryLength, kernelNs);
++            } else if (kernelName == "matmul_qkv") {
++                profileAttentionNs += kernelNs;
++                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQKV,
++                                 profileHistoryLength, kernelNs);
++                recordLLMProfile(LLMProfileCategory::OpenCLAttention,
++                                 profileHistoryLength, profileAttentionNs);
++                profileAttentionNs = 0;
++            }
++        }
+         if (mEvents[i].first.length() >= 15 && mEvents[i].first.substr(0, 15) == "ConvBuf2D-gemm2") {
+             conv_gemm2_buf_time += kernel_time;
+             conv_time += kernel_time;
+@@ -1070,6 +1100,9 @@ void OpenCLRuntime::printEventTime(){
+         
+         kernels[i] = std::make_pair(mEvents[i].first, kernel_time);
+     }
++    if (profileDecode && profileKernelTotalNs > 0) {
++        recordLLMProfile(LLMProfileCategory::OpenCLKernelTotal, profileHistoryLength, profileKernelTotalNs);
++    }
+ #ifndef MNN_GPU_PROFILE_SILENT
+ #ifdef SORT_PROFILE_TIME
+     for(int i = 0; i < mEvents.size(); i++) {
+diff --git a/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp b/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
+index 10530f8..445375e 100644
+--- a/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
++++ b/source/backend/opencl/execution/buffer/AttentionBufExecution.cpp
+@@ -1941,6 +1941,9 @@ ErrorCode AttentionBufExecution::onExecute(const std::vector<Tensor*>& inputs, c
+     } else {
+         if (mIsDecode) {
+             cl::Event event0, event1, event2, event3, event4;
++            if (isLLMProfileEnabled()) {
++                setLLMProfileHistoryLength(mKvSeqlen);
++            }
+             run3DKernelDefault(mKernel_rearrange, mGlobalWorkSizeRearrg, mLocalWorkSizeRearrg,
+                                mOpenCLBackend->getOpenCLRuntime(), &event0);
+             mOpenCLBackend->getOpenCLRuntime()->pushEvent({"rearrange_k", event0});
+@@ -1958,20 +1961,6 @@ ErrorCode AttentionBufExecution::onExecute(const std::vector<Tensor*>& inputs, c
+             runKernel2D(mKernel_qkv, mGlobalWorkSizeQkv, mLocalWorkSizeQkv, mOpenCLBackend->getOpenCLRuntime(),
+                         &event4);
+             mOpenCLBackend->getOpenCLRuntime()->pushEvent({"matmul_qkv", event4});
+-            if (isLLMProfileEnabled()) {
+-                auto* runtime = mOpenCLBackend->getOpenCLRuntime();
+-                const uint64_t rearrangeNs =
+-                    static_cast<uint64_t>(runtime->getEventTime(event0) + runtime->getEventTime(event3)) * 1000;
+-                const uint64_t qkNs = static_cast<uint64_t>(runtime->getEventTime(event1)) * 1000;
+-                const uint64_t softmaxNs = static_cast<uint64_t>(runtime->getEventTime(event2)) * 1000;
+-                const uint64_t qkvNs = static_cast<uint64_t>(runtime->getEventTime(event4)) * 1000;
+-                recordLLMProfile(LLMProfileCategory::OpenCLAttention, mKvSeqlen,
+-                                 rearrangeNs + qkNs + softmaxNs + qkvNs);
+-                recordLLMProfile(LLMProfileCategory::OpenCLAttentionRearrange, mKvSeqlen, rearrangeNs);
+-                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQK, mKvSeqlen, qkNs);
+-                recordLLMProfile(LLMProfileCategory::OpenCLAttentionSoftmax, mKvSeqlen, softmaxNs);
+-                recordLLMProfile(LLMProfileCategory::OpenCLAttentionQKV, mKvSeqlen, qkvNs);
+-            }
+         } else {
+             cl::Event event0, event1, event2, event3, event4, event5, event6;
+             run3DKernelDefault(mKernel_rearrangeQ, mGlobalWorkSizeRearrgQ, mLocalWorkSizeRearrgQ,
+diff --git a/transformers/llm/engine/demo/moss_qnn_runner.cpp b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+index a5472c8..4b2c0f1 100644
+--- a/transformers/llm/engine/demo/moss_qnn_runner.cpp
++++ b/transformers/llm/engine/demo/moss_qnn_runner.cpp
+@@ -138,8 +138,10 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+         const double openclQKMs = nsToMs(bucket.openclAttentionQKNs);
+         const double openclSoftmaxMs = nsToMs(bucket.openclAttentionSoftmaxNs);
+         const double openclQKVMs = nsToMs(bucket.openclAttentionQKVNs);
++        const double openclKernelTotalMs = nsToMs(bucket.openclKernelTotalNs);
++        const double openclOtherKernelMs = std::max(0.0, openclKernelTotalMs - openclAttentionMs);
+         accountedMs += cpuAttentionMs + qnnInputCopyMs + qnnExecuteSyncMs + qnnOutputCopyMs +
+-                       qnnStateUpdateMs + openclAttentionMs;
++                       qnnStateUpdateMs + openclKernelTotalMs;
+         if (index > 0) output << ',';
+         output << "{\"history_begin\":" << bucket.historyBegin
+                << ",\"history_end\":" << bucket.historyEnd
+@@ -163,7 +165,9 @@ void writeDecodeProfile(std::ostream& output, const std::vector<MNN::LLMProfileB
+                << ",\"opencl_attention_rearrange_ms\":" << openclRearrangeMs
+                << ",\"opencl_attention_qk_ms\":" << openclQKMs
+                << ",\"opencl_attention_softmax_ms\":" << openclSoftmaxMs
+-               << ",\"opencl_attention_qkv_ms\":" << openclQKVMs << '}';
++               << ",\"opencl_attention_qkv_ms\":" << openclQKVMs
++               << ",\"opencl_kernel_total_ms\":" << openclKernelTotalMs
++               << ",\"opencl_other_kernel_ms\":" << openclOtherKernelMs << '}';
+     }
+     output << "],\"accounted_ms\":" << accountedMs
+            << ",\"unaccounted_ms\":" << (decodeMs - accountedMs) << '}';
